@@ -170,4 +170,4 @@ This library was entirely AI-generated (by [Kiro](https://kiro.dev)) under my su
 
 ## License
 
-MIT OR Apache-2.0
+MIT
