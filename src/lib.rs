@@ -434,7 +434,7 @@ impl CodecWithLen for String {
             return Err(CodecError::AllocationTooLarge { requested: n });
         }
         check(rest, n)?;
-        let s = std::str::from_utf8(&rest[..n]).map_err(|_| CodecError::InvalidUtf8)?.to_owned();
+        let s = String::from_utf8(rest[..n].to_vec()).map_err(|_| CodecError::InvalidUtf8)?;
         Ok((s, &rest[n..]))
     }
     fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
@@ -754,3 +754,65 @@ impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E);
 impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F);
 impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G);
 impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H);
+
+// --- Zero-copy bytes ---
+
+/// A zero-copy byte slice reference for efficient binary protocol parsing.
+///
+/// Unlike `Vec<u8>`, `Bytes` borrows directly from the input buffer without copying.
+/// Wire format: u32 length prefix followed by raw bytes (same as `Vec<u8>`).
+///
+/// # Example
+///
+/// ```
+/// use autocodec::{Bytes, CodecError};
+///
+/// let data = [0, 0, 0, 3, 0xAA, 0xBB, 0xCC, 0xFF];
+/// let (bytes, rest) = Bytes::decode(&data).unwrap();
+/// assert_eq!(bytes.as_ref(), &[0xAA, 0xBB, 0xCC]);
+/// assert_eq!(rest, &[0xFF]);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Bytes<'a>(pub &'a [u8]);
+
+impl<'a> Bytes<'a> {
+    /// Decode a length-prefixed byte slice from input without copying.
+    pub fn decode(input: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        let (len, rest) = u32::decode(input)?;
+        let n = len as usize;
+        if n > MAX_DECODE_LEN {
+            return Err(CodecError::AllocationTooLarge { requested: n });
+        }
+        check(rest, n)?;
+        Ok((Bytes(&rest[..n]), &rest[n..]))
+    }
+
+    /// Decode with a custom length prefix type.
+    pub fn decode_with_len<L: LenPrefix>(input: &'a [u8]) -> Result<(Self, &'a [u8]), CodecError> {
+        let (len, rest) = L::decode(input)?;
+        let n = len.to_usize();
+        if n > MAX_DECODE_LEN {
+            return Err(CodecError::AllocationTooLarge { requested: n });
+        }
+        check(rest, n)?;
+        Ok((Bytes(&rest[..n]), &rest[n..]))
+    }
+
+    /// Encode this byte slice with a u32 length prefix.
+    pub fn encode(&self, buf: &mut Vec<u8>) {
+        (self.0.len() as u32).encode(buf);
+        buf.extend_from_slice(self.0);
+    }
+
+    /// Encoded size in bytes.
+    pub fn encoded_size(&self) -> usize { 4 + self.0.len() }
+}
+
+impl<'a> AsRef<[u8]> for Bytes<'a> {
+    fn as_ref(&self) -> &[u8] { self.0 }
+}
+
+impl<'a> core::ops::Deref for Bytes<'a> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] { self.0 }
+}

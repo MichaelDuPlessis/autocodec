@@ -706,3 +706,183 @@ fn error_context_shows_field_name() {
         other => panic!("expected FieldError, got {other:?}"),
     }
 }
+
+// --- repr(u8) with native discriminants ---
+
+#[derive(Debug, PartialEq, Codec)]
+#[repr(u8)]
+enum ReprEnum {
+    A = 1,
+    B = 5,
+    C = 10,
+}
+
+#[test]
+fn repr_u8_enum() {
+    let mut buf = Vec::new();
+    ReprEnum::A.encode(&mut buf);
+    assert_eq!(buf, [1]);
+    buf.clear();
+    ReprEnum::B.encode(&mut buf);
+    assert_eq!(buf, [5]);
+    buf.clear();
+    ReprEnum::C.encode(&mut buf);
+    assert_eq!(buf, [10]);
+
+    let (decoded, _) = ReprEnum::decode(&[5]).unwrap();
+    assert_eq!(decoded, ReprEnum::B);
+
+    assert!(ReprEnum::decode(&[0]).is_err());
+}
+
+#[derive(Debug, PartialEq, Codec)]
+#[repr(u16)]
+enum ReprU16Enum {
+    X = 256,
+    Y = 512,
+}
+
+#[test]
+fn repr_u16_enum() {
+    let mut buf = Vec::new();
+    ReprU16Enum::X.encode(&mut buf);
+    assert_eq!(buf, [1, 0]); // 256 big-endian
+    let (decoded, _) = ReprU16Enum::decode(&buf).unwrap();
+    assert_eq!(decoded, ReprU16Enum::X);
+}
+
+// --- Zero-copy Bytes ---
+
+#[test]
+fn bytes_zero_copy() {
+    use autocodec::Bytes;
+    let data = [0, 0, 0, 5, 1, 2, 3, 4, 5, 0xFF];
+    let (bytes, rest) = Bytes::decode(&data).unwrap();
+    assert_eq!(bytes.as_ref(), &[1, 2, 3, 4, 5]);
+    assert_eq!(rest, &[0xFF]);
+    // Verify it's truly zero-copy: the slice points into the original data
+    assert_eq!(bytes.0.as_ptr(), data[4..].as_ptr());
+}
+
+#[test]
+fn bytes_encode() {
+    use autocodec::Bytes;
+    let b = Bytes(&[0xAA, 0xBB]);
+    let mut buf = Vec::new();
+    b.encode(&mut buf);
+    assert_eq!(buf, [0, 0, 0, 2, 0xAA, 0xBB]);
+}
+
+#[test]
+fn bytes_encoded_size() {
+    use autocodec::Bytes;
+    let b = Bytes(&[1, 2, 3]);
+    assert_eq!(b.encoded_size(), 7); // 4 + 3
+}
+
+// --- Error context in enums ---
+
+#[derive(Debug, PartialEq, Codec)]
+enum ContextEnum {
+    Foo { x: u32, y: String },
+}
+
+#[test]
+fn error_context_enum_variant_field() {
+    // Discriminant 0, x = valid u32, y = string with bad length
+    let mut buf = vec![0u8]; // disc
+    buf.extend_from_slice(&42u32.to_be_bytes()); // x
+    buf.extend_from_slice(&100u32.to_be_bytes()); // y length = 100 but not enough bytes
+
+    let err = ContextEnum::decode(&buf).unwrap_err();
+    match err {
+        CodecError::FieldError { field, .. } => assert_eq!(field, "Foo::y"),
+        other => panic!("expected FieldError, got {other:?}"),
+    }
+}
+
+// --- Error context in tuple structs ---
+
+#[test]
+fn error_context_tuple_struct() {
+    let err = Wrapper::decode(&[0, 0]).unwrap_err(); // needs 4 bytes, only 2
+    match err {
+        CodecError::FieldError { field, .. } => assert_eq!(field, "0"),
+        other => panic!("expected FieldError, got {other:?}"),
+    }
+}
+
+// --- encoded_size for enums ---
+
+#[test]
+fn encoded_size_enum() {
+    let msg = Message::Data { id: 1, payload: vec![0; 10] };
+    // disc(1) + id(4) + vec_len(4) + 10 bytes = 19
+    assert_eq!(msg.encoded_size(), 19);
+    assert_eq!(Message::Ping.encoded_size(), 1);
+}
+
+// --- Bitfield edge cases ---
+
+#[derive(Debug, PartialEq, Codec)]
+struct BitfieldMixed {
+    #[codec(bits = 3)]
+    a: u8,
+    #[codec(bits = 5)]
+    b: u8,
+    // 8 bits = 1 byte, then a normal field
+    normal: u16,
+}
+
+#[test]
+fn bitfield_followed_by_normal() {
+    let val = BitfieldMixed { a: 0b101, b: 0b11010, normal: 0x1234 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    // a=101, b=11010 -> 10111010 = 0xBA, then u16 0x1234
+    assert_eq!(buf.len(), 3);
+    assert_eq!(buf[0], 0b10111010);
+    assert_eq!(&buf[1..3], &[0x12, 0x34]);
+    let (decoded, _) = BitfieldMixed::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+}
+
+#[derive(Debug, PartialEq, Codec)]
+struct BitfieldWide {
+    #[codec(bits = 12)]
+    val12: u16,
+    #[codec(bits = 4)]
+    val4: u8,
+    // 16 bits = 2 bytes
+}
+
+#[test]
+fn bitfield_wide_values() {
+    let val = BitfieldWide { val12: 0xABC, val4: 0xD };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    assert_eq!(buf.len(), 2);
+    // 0xABC = 1010 1011 1100, 0xD = 1101 -> 1010 1011 1100 1101 = 0xABCD
+    assert_eq!(buf, [0xAB, 0xCD]);
+    let (decoded, _) = BitfieldWide::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+}
+
+// --- Empty struct with padding ---
+
+#[derive(Debug, PartialEq, Codec)]
+struct PaddedEmpty {
+    #[codec(skip, padding = 4)]
+    _reserved: u32,
+}
+
+#[test]
+fn empty_struct_with_padding() {
+    let val = PaddedEmpty { _reserved: 0 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    assert_eq!(buf, [0, 0, 0, 0]);
+    let (decoded, rest) = PaddedEmpty::decode(&[0, 0, 0, 0, 0xFF]).unwrap();
+    assert_eq!(decoded._reserved, 0);
+    assert_eq!(rest, &[0xFF]);
+}
