@@ -244,3 +244,28 @@ fn roundtrip_custom_len_u16_string() {
     assert_eq!(decoded, val);
     assert!(rest.is_empty());
 }
+
+#[derive(Debug, PartialEq, Codec)]
+struct NonEmpty {
+    #[codec(min_len = 1)]
+    items: Vec<u8>,
+}
+
+#[test]
+fn min_len_accepts_valid() {
+    let val = NonEmpty { items: vec![1, 2, 3] };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    let (decoded, rest) = NonEmpty::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn min_len_rejects_empty() {
+    let val = NonEmpty { items: vec![] };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    let result = NonEmpty::decode(&buf);
+    assert_eq!(result, Err(CodecError::TooShort { min: 1, actual: 0 }));
+}

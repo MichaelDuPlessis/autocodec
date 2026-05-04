@@ -70,11 +70,13 @@ enum LenType {
 struct FieldAttrs {
     endian: Option<Endian>,
     len: Option<LenType>,
+    min_len: Option<usize>,
 }
 
 fn parse_field_attrs(field: &Field) -> FieldAttrs {
     let mut endian = None;
     let mut len = None;
+    let mut min_len = None;
     for attr in &field.attrs {
         if !attr.path().is_ident("codec") {
             continue;
@@ -100,9 +102,14 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
                     _ => None,
                 };
             }
+            if nv.path.is_ident("min_len")
+                && let syn::Expr::Lit(syn::ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+            {
+                min_len = i.base10_parse::<usize>().ok();
+            }
         }
     }
-    FieldAttrs { endian, len }
+    FieldAttrs { endian, len, min_len }
 }
 
 fn len_type_tokens(lt: LenType) -> proc_macro2::TokenStream {
@@ -151,6 +158,19 @@ fn encode_expr_ref(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs) -> 
     }
 }
 
+fn decode_stmt(binding: proc_macro2::TokenStream, ty: &syn::Type, attrs: &FieldAttrs) -> proc_macro2::TokenStream {
+    let expr = decode_expr(ty, attrs);
+    let base = quote! { let (#binding, input) = #expr; };
+    if let Some(min) = attrs.min_len {
+        quote! {
+            #base
+            autocodec::check_min_len(&#binding, #min)?;
+        }
+    } else {
+        base
+    }
+}
+
 fn impl_struct(
     name: &syn::Ident,
     impl_generics: &syn::ImplGenerics,
@@ -165,8 +185,7 @@ fn impl_struct(
             let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
 
             let decode_stmts = field_names.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((n, t), a)| {
-                let expr = decode_expr(t, a);
-                quote! { let (#n, input) = #expr; }
+                decode_stmt(quote! { #n }, t, a)
             });
 
             let encode_stmts = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
@@ -195,8 +214,7 @@ fn impl_struct(
                 .collect();
 
             let decode_stmts = field_idents.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((id, t), a)| {
-                let expr = decode_expr(t, a);
-                quote! { let (#id, input) = #expr; }
+                decode_stmt(quote! { #id }, t, a)
             });
 
             let encode_stmts = field_idents.iter().enumerate().zip(attrs.iter()).map(|((i, _), a)| {
@@ -251,8 +269,7 @@ fn impl_enum(
                 let field_types: Vec<_> = f.named.iter().map(|f| &f.ty).collect();
                 let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
                 let stmts = field_names.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((n, t), a)| {
-                    let expr = decode_expr(t, a);
-                    quote! { let (#n, input) = #expr; }
+                    decode_stmt(quote! { #n }, t, a)
                 });
                 quote! {
                     #disc => {
@@ -268,8 +285,7 @@ fn impl_enum(
                     .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
                     .collect();
                 let stmts = field_idents.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((id, t), a)| {
-                    let expr = decode_expr(t, a);
-                    quote! { let (#id, input) = #expr; }
+                    decode_stmt(quote! { #id }, t, a)
                 });
                 quote! {
                     #disc => {

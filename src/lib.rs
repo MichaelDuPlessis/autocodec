@@ -125,6 +125,8 @@ pub enum CodecError {
     InvalidUtf8,
     /// An enum's discriminant byte did not match any known variant.
     UnknownDiscriminant { value: u8 },
+    /// A field's length was below the required minimum.
+    TooShort { min: usize, actual: usize },
 }
 
 impl core::fmt::Display for CodecError {
@@ -136,6 +138,9 @@ impl core::fmt::Display for CodecError {
             Self::InvalidUtf8 => write!(f, "invalid UTF-8"),
             Self::UnknownDiscriminant { value } => {
                 write!(f, "unknown discriminant: {value}")
+            }
+            Self::TooShort { min, actual } => {
+                write!(f, "length too short: minimum {min}, got {actual}")
             }
         }
     }
@@ -399,6 +404,36 @@ pub fn decode_with_len<L: LenPrefix, T: CodecWithLen>(input: &[u8]) -> Result<(T
 #[inline]
 pub fn encode_with_len<L: LenPrefix, T: CodecWithLen>(val: &T, buf: &mut Vec<u8>) {
     val.encode_with_len::<L>(buf);
+}
+
+/// Trait for types that have a length (used by `#[codec(min_len = N)]`).
+#[doc(hidden)]
+pub trait HasLen {
+    fn codec_len(&self) -> usize;
+}
+
+impl<T> HasLen for Vec<T> {
+    #[inline]
+    fn codec_len(&self) -> usize { self.len() }
+}
+
+impl HasLen for String {
+    #[inline]
+    fn codec_len(&self) -> usize { self.len() }
+}
+
+/// Check that a decoded value meets the minimum length requirement.
+///
+/// Called by generated code for fields annotated with `#[codec(min_len = N)]`.
+#[doc(hidden)]
+#[inline]
+pub fn check_min_len<T: HasLen>(val: &T, min: usize) -> Result<(), CodecError> {
+    let actual = val.codec_len();
+    if actual < min {
+        Err(CodecError::TooShort { min, actual })
+    } else {
+        Ok(())
+    }
 }
 
 impl Codec for bool {
