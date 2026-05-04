@@ -1,0 +1,11 @@
+[package]
+name = "autocodec"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+autocodec_derive = { path = "autocodec_derive" }
+
+[workspace]
+members = [".", "autocodec_derive"]
+resolver = "3"
