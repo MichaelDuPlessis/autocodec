@@ -59,38 +59,95 @@ enum Endian {
     Little,
 }
 
-fn field_endian(field: &Field) -> Option<Endian> {
+#[derive(Clone, Copy)]
+enum LenType {
+    U8,
+    U16,
+    U32,
+    U64,
+}
+
+struct FieldAttrs {
+    endian: Option<Endian>,
+    len: Option<LenType>,
+}
+
+fn parse_field_attrs(field: &Field) -> FieldAttrs {
+    let mut endian = None;
+    let mut len = None;
     for attr in &field.attrs {
         if !attr.path().is_ident("codec") {
             continue;
         }
-        if let Ok(Meta::NameValue(nv)) = attr.parse_args::<Meta>()
-            && nv.path.is_ident("endian")
-            && let syn::Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = &nv.value
-        {
-            return match s.value().as_str() {
-                "little" => Some(Endian::Little),
-                "big" => Some(Endian::Big),
-                _ => None,
-            };
+        if let Ok(Meta::NameValue(nv)) = attr.parse_args::<Meta>() {
+            if nv.path.is_ident("endian")
+                && let syn::Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+            {
+                endian = match s.value().as_str() {
+                    "little" => Some(Endian::Little),
+                    "big" => Some(Endian::Big),
+                    _ => None,
+                };
+            }
+            if nv.path.is_ident("len")
+                && let syn::Expr::Lit(syn::ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+            {
+                len = match s.value().as_str() {
+                    "u8" => Some(LenType::U8),
+                    "u16" => Some(LenType::U16),
+                    "u32" => Some(LenType::U32),
+                    "u64" => Some(LenType::U64),
+                    _ => None,
+                };
+            }
         }
     }
-    None
+    FieldAttrs { endian, len }
 }
 
-fn decode_expr(ty: &syn::Type, endian: Option<Endian>) -> proc_macro2::TokenStream {
-    match endian {
+fn len_type_tokens(lt: LenType) -> proc_macro2::TokenStream {
+    match lt {
+        LenType::U8 => quote! { u8 },
+        LenType::U16 => quote! { u16 },
+        LenType::U32 => quote! { u32 },
+        LenType::U64 => quote! { u64 },
+    }
+}
+
+fn decode_expr(ty: &syn::Type, attrs: &FieldAttrs) -> proc_macro2::TokenStream {
+    if let Some(lt) = attrs.len {
+        let len_ty = len_type_tokens(lt);
+        return quote! { autocodec::decode_with_len::<#len_ty, #ty>(input)? };
+    }
+    match attrs.endian {
         Some(Endian::Big) => quote! { autocodec::decode_be::<#ty>(input)? },
         Some(Endian::Little) => quote! { autocodec::decode_le::<#ty>(input)? },
         None => quote! { <#ty as autocodec::Codec>::decode(input)? },
     }
 }
 
-fn encode_expr(field_expr: proc_macro2::TokenStream, endian: Option<Endian>) -> proc_macro2::TokenStream {
-    match endian {
+fn encode_expr(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs) -> proc_macro2::TokenStream {
+    if let Some(lt) = attrs.len {
+        let len_ty = len_type_tokens(lt);
+        return quote! { autocodec::encode_with_len::<#len_ty, _>(&#field_expr, buf); };
+    }
+    match attrs.endian {
         Some(Endian::Big) => quote! { autocodec::encode_be(&#field_expr, buf); },
         Some(Endian::Little) => quote! { autocodec::encode_le(&#field_expr, buf); },
         None => quote! { autocodec::Codec::encode(&#field_expr, buf); },
+    }
+}
+
+/// Like `encode_expr` but for values that are already references (enum pattern bindings).
+fn encode_expr_ref(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs) -> proc_macro2::TokenStream {
+    if let Some(lt) = attrs.len {
+        let len_ty = len_type_tokens(lt);
+        return quote! { autocodec::encode_with_len::<#len_ty, _>(#field_expr, buf); };
+    }
+    match attrs.endian {
+        Some(Endian::Big) => quote! { autocodec::encode_be(#field_expr, buf); },
+        Some(Endian::Little) => quote! { autocodec::encode_le(#field_expr, buf); },
+        None => quote! { autocodec::Codec::encode(#field_expr, buf); },
     }
 }
 
@@ -105,15 +162,15 @@ fn impl_struct(
         Fields::Named(f) => {
             let field_names: Vec<_> = f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
             let field_types: Vec<_> = f.named.iter().map(|f| &f.ty).collect();
-            let endians: Vec<_> = f.named.iter().map(field_endian).collect();
+            let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
 
-            let decode_stmts = field_names.iter().zip(field_types.iter()).zip(endians.iter()).map(|((n, t), e)| {
-                let expr = decode_expr(t, *e);
+            let decode_stmts = field_names.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((n, t), a)| {
+                let expr = decode_expr(t, a);
                 quote! { let (#n, input) = #expr; }
             });
 
-            let encode_stmts = field_names.iter().zip(endians.iter()).map(|(n, e)| {
-                encode_expr(quote! { self.#n }, *e)
+            let encode_stmts = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
+                encode_expr(quote! { self.#n }, a)
             });
 
             let construct = quote! { Self { #(#field_names),* } };
@@ -132,19 +189,19 @@ fn impl_struct(
         }
         Fields::Unnamed(f) => {
             let field_types: Vec<_> = f.unnamed.iter().map(|f| &f.ty).collect();
-            let endians: Vec<_> = f.unnamed.iter().map(field_endian).collect();
+            let attrs: Vec<_> = f.unnamed.iter().map(parse_field_attrs).collect();
             let field_idents: Vec<_> = (0..field_types.len())
                 .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
                 .collect();
 
-            let decode_stmts = field_idents.iter().zip(field_types.iter()).zip(endians.iter()).map(|((id, t), e)| {
-                let expr = decode_expr(t, *e);
+            let decode_stmts = field_idents.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((id, t), a)| {
+                let expr = decode_expr(t, a);
                 quote! { let (#id, input) = #expr; }
             });
 
-            let encode_stmts = field_idents.iter().enumerate().zip(endians.iter()).map(|((i, _), e)| {
+            let encode_stmts = field_idents.iter().enumerate().zip(attrs.iter()).map(|((i, _), a)| {
                 let idx = syn::Index::from(i);
-                encode_expr(quote! { self.#idx }, *e)
+                encode_expr(quote! { self.#idx }, a)
             });
 
             quote! {
@@ -192,9 +249,9 @@ fn impl_enum(
             Fields::Named(f) => {
                 let field_names: Vec<_> = f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
                 let field_types: Vec<_> = f.named.iter().map(|f| &f.ty).collect();
-                let endians: Vec<_> = f.named.iter().map(field_endian).collect();
-                let stmts = field_names.iter().zip(field_types.iter()).zip(endians.iter()).map(|((n, t), e)| {
-                    let expr = decode_expr(t, *e);
+                let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
+                let stmts = field_names.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((n, t), a)| {
+                    let expr = decode_expr(t, a);
                     quote! { let (#n, input) = #expr; }
                 });
                 quote! {
@@ -206,12 +263,12 @@ fn impl_enum(
             }
             Fields::Unnamed(f) => {
                 let field_types: Vec<_> = f.unnamed.iter().map(|f| &f.ty).collect();
-                let endians: Vec<_> = f.unnamed.iter().map(field_endian).collect();
+                let attrs: Vec<_> = f.unnamed.iter().map(parse_field_attrs).collect();
                 let field_idents: Vec<_> = (0..field_types.len())
                     .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
                     .collect();
-                let stmts = field_idents.iter().zip(field_types.iter()).zip(endians.iter()).map(|((id, t), e)| {
-                    let expr = decode_expr(t, *e);
+                let stmts = field_idents.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((id, t), a)| {
+                    let expr = decode_expr(t, a);
                     quote! { let (#id, input) = #expr; }
                 });
                 quote! {
@@ -233,13 +290,9 @@ fn impl_enum(
             },
             Fields::Named(f) => {
                 let field_names: Vec<_> = f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
-                let endians: Vec<_> = f.named.iter().map(field_endian).collect();
-                let stmts = field_names.iter().zip(endians.iter()).map(|(n, e)| {
-                    match e {
-                        Some(Endian::Big) => quote! { autocodec::encode_be(#n, buf); },
-                        Some(Endian::Little) => quote! { autocodec::encode_le(#n, buf); },
-                        None => quote! { autocodec::Codec::encode(#n, buf); },
-                    }
+                let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
+                let stmts = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
+                    encode_expr_ref(quote! { #n }, a)
                 });
                 quote! {
                     Self::#vname { #(#field_names),* } => {
@@ -249,16 +302,12 @@ fn impl_enum(
                 }
             }
             Fields::Unnamed(f) => {
-                let endians: Vec<_> = f.unnamed.iter().map(field_endian).collect();
+                let attrs: Vec<_> = f.unnamed.iter().map(parse_field_attrs).collect();
                 let field_idents: Vec<_> = (0..f.unnamed.len())
                     .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
                     .collect();
-                let stmts = field_idents.iter().zip(endians.iter()).map(|(id, e)| {
-                    match e {
-                        Some(Endian::Big) => quote! { autocodec::encode_be(#id, buf); },
-                        Some(Endian::Little) => quote! { autocodec::encode_le(#id, buf); },
-                        None => quote! { autocodec::Codec::encode(#id, buf); },
-                    }
+                let stmts = field_idents.iter().zip(attrs.iter()).map(|(id, a)| {
+                    encode_expr_ref(quote! { #id }, a)
                 });
                 quote! {
                     Self::#vname(#(#field_idents),*) => {

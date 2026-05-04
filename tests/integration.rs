@@ -206,3 +206,41 @@ fn remaining_bytes_preserved() {
     let (_, rest) = Header::decode(&buf).unwrap();
     assert_eq!(rest, &[0xAA, 0xBB]);
 }
+
+#[derive(Debug, PartialEq, Codec)]
+struct ShortVec {
+    #[codec(len = "u8")]
+    items: Vec<u16>,
+}
+
+#[derive(Debug, PartialEq, Codec)]
+struct ShortString {
+    #[codec(len = "u16")]
+    name: String,
+}
+
+#[test]
+fn roundtrip_custom_len_u8() {
+    let val = ShortVec { items: vec![1, 2, 3] };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    // u8 len (1 byte) + 3 * u16 (6 bytes) = 7 bytes
+    assert_eq!(buf.len(), 7);
+    assert_eq!(buf[0], 3); // u8 length prefix
+    let (decoded, rest) = ShortVec::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn roundtrip_custom_len_u16_string() {
+    let val = ShortString { name: "hello".into() };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    // u16 len (2 bytes) + 5 bytes = 7 bytes
+    assert_eq!(buf.len(), 7);
+    assert_eq!(&buf[0..2], &[0, 5]); // u16 big-endian length prefix
+    let (decoded, rest) = ShortString::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}

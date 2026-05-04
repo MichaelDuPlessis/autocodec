@@ -311,6 +311,96 @@ pub fn encode_le<T: CodecLe>(val: &T, buf: &mut Vec<u8>) {
     val.encode_le(buf);
 }
 
+/// Trait for integer types usable as length prefixes.
+///
+/// Used internally by the derive macro when a field is annotated with
+/// `#[codec(len = "u8")]`, `#[codec(len = "u16")]`, etc.
+#[doc(hidden)]
+pub trait LenPrefix: Codec {
+    fn to_usize(self) -> usize;
+    fn from_usize(n: usize) -> Self;
+}
+
+impl LenPrefix for u8 {
+    #[inline] fn to_usize(self) -> usize { self as usize }
+    #[inline] fn from_usize(n: usize) -> Self { n as u8 }
+}
+impl LenPrefix for u16 {
+    #[inline] fn to_usize(self) -> usize { self as usize }
+    #[inline] fn from_usize(n: usize) -> Self { n as u16 }
+}
+impl LenPrefix for u32 {
+    #[inline] fn to_usize(self) -> usize { self as usize }
+    #[inline] fn from_usize(n: usize) -> Self { n as u32 }
+}
+impl LenPrefix for u64 {
+    #[inline] fn to_usize(self) -> usize { self as usize }
+    #[inline] fn from_usize(n: usize) -> Self { n as u64 }
+}
+
+/// Trait for types that can be decoded with a custom length prefix.
+///
+/// Implemented for `Vec<T>` and `String`.
+#[doc(hidden)]
+pub trait CodecWithLen: Sized {
+    fn decode_with_len<L: LenPrefix>(input: &[u8]) -> Result<(Self, &[u8]), CodecError>;
+    fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>);
+}
+
+impl<T: Codec> CodecWithLen for Vec<T> {
+    fn decode_with_len<L: LenPrefix>(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        let (len, mut rest) = L::decode(input)?;
+        let count = len.to_usize();
+        let mut vec = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (item, remaining) = T::decode(rest)?;
+            vec.push(item);
+            rest = remaining;
+        }
+        Ok((vec, rest))
+    }
+    fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
+        L::from_usize(self.len()).encode(buf);
+        for item in self {
+            item.encode(buf);
+        }
+    }
+}
+
+impl CodecWithLen for String {
+    fn decode_with_len<L: LenPrefix>(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        let (len, rest) = L::decode(input)?;
+        let n = len.to_usize();
+        check(rest, n)?;
+        let s = std::str::from_utf8(&rest[..n])
+            .map_err(|_| CodecError::InvalidUtf8)?
+            .to_owned();
+        Ok((s, &rest[n..]))
+    }
+    fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
+        L::from_usize(self.len()).encode(buf);
+        buf.extend_from_slice(self.as_bytes());
+    }
+}
+
+/// Decode a value using a custom length prefix type.
+///
+/// Called by generated code for fields annotated with `#[codec(len = "...")]`.
+#[doc(hidden)]
+#[inline]
+pub fn decode_with_len<L: LenPrefix, T: CodecWithLen>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
+    T::decode_with_len::<L>(input)
+}
+
+/// Encode a value using a custom length prefix type.
+///
+/// Called by generated code for fields annotated with `#[codec(len = "...")]`.
+#[doc(hidden)]
+#[inline]
+pub fn encode_with_len<L: LenPrefix, T: CodecWithLen>(val: &T, buf: &mut Vec<u8>) {
+    val.encode_with_len::<L>(buf);
+}
+
 impl Codec for bool {
     /// Decodes a single byte as a boolean (0 = false, nonzero = true).
     #[inline]
