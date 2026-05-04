@@ -4,7 +4,7 @@
 //!
 //! Annotate your structs and enums with `#[derive(Codec)]` to automatically generate
 //! efficient binary encoding and decoding. All multi-byte integers use big-endian (network
-//! byte order) by default, with per-field little-endian override via `#[codec(endian = "little")]`.
+//! byte order) by default, with per-field override via `#[codec(endian = "little")]`.
 //!
 //! ## Quick Start
 //!
@@ -32,7 +32,7 @@
 //!
 //! ## Enums
 //!
-//! Enums are prefixed with a `u8` discriminant (variant index, starting at 0).
+//! Enums are prefixed with a discriminant byte (variant index, starting at 0).
 //! Unit, tuple, and struct variants are all supported.
 //!
 //! ```
@@ -98,13 +98,21 @@
 //! | `u16`, `i16` | 2 bytes, big-endian |
 //! | `u32`, `i32` | 4 bytes, big-endian |
 //! | `u64`, `i64` | 8 bytes, big-endian |
+//! | `f32` | 4 bytes, IEEE 754, big-endian |
+//! | `f64` | 8 bytes, IEEE 754, big-endian |
 //! | `bool` | 1 byte (0 = false, nonzero = true) |
 //! | `String` | u32 length prefix + UTF-8 bytes |
 //! | `Vec<T>` | u32 length prefix + N encoded elements |
 //! | `Option<T>` | u8 tag (0 = None, 1 = Some) + value |
 //! | `[T; N]` | N encoded elements (no length prefix) |
+//! | `Box<T>` | transparent (same as T) |
+//! | `(A, B, ...)` | sequential fields (up to 8 elements) |
+//! | `HashMap<K, V>` | u32 length prefix + key-value pairs |
 
 pub use autocodec_derive::Codec;
+
+use std::collections::HashMap;
+use std::hash::Hash;
 
 /// Errors that can occur during decoding.
 ///
@@ -123,10 +131,16 @@ pub enum CodecError {
     NotEnoughBytes { needed: usize, available: usize },
     /// A `String` field contained bytes that are not valid UTF-8.
     InvalidUtf8,
-    /// An enum's discriminant byte did not match any known variant.
+    /// An enum's discriminant did not match any known variant.
     UnknownDiscriminant { value: u8 },
     /// A field's length was below the required minimum.
     TooShort { min: usize, actual: usize },
+    /// A field's length exceeded the allowed maximum.
+    TooLong { max: usize, actual: usize },
+    /// A magic/constant value did not match the expected value.
+    BadMagic,
+    /// A custom validation function failed.
+    ValidationFailed,
 }
 
 impl core::fmt::Display for CodecError {
@@ -142,6 +156,11 @@ impl core::fmt::Display for CodecError {
             Self::TooShort { min, actual } => {
                 write!(f, "length too short: minimum {min}, got {actual}")
             }
+            Self::TooLong { max, actual } => {
+                write!(f, "length too long: maximum {max}, got {actual}")
+            }
+            Self::BadMagic => write!(f, "magic value mismatch"),
+            Self::ValidationFailed => write!(f, "validation failed"),
         }
     }
 }
@@ -151,14 +170,14 @@ impl std::error::Error for CodecError {}
 /// Trait for types that can be encoded to and decoded from a binary format.
 ///
 /// Implementations are generated automatically via `#[derive(Codec)]`. Built-in
-/// implementations are provided for primitive integers, `bool`, `String`, `Vec<T>`,
-/// `Option<T>`, and fixed-size arrays `[T; N]`.
+/// implementations are provided for primitive integers, floats, `bool`, `String`,
+/// `Vec<T>`, `Option<T>`, `Box<T>`, tuples, `HashMap<K,V>`, and fixed-size arrays.
 ///
 /// # Wire Format
 ///
 /// - Structs: fields encoded sequentially in declaration order.
-/// - Enums: a `u8` discriminant followed by the variant's fields.
-/// - Multi-byte integers: big-endian by default.
+/// - Enums: a discriminant byte followed by the variant's fields.
+/// - Multi-byte integers/floats: big-endian by default.
 ///
 /// # Examples
 ///
@@ -176,10 +195,6 @@ impl std::error::Error for CodecError {}
 /// ```
 pub trait Codec: Sized {
     /// Decode a value from the front of `input`, returning the value and remaining bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CodecError`] if the input is malformed or too short.
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError>;
 
     /// Encode this value by appending bytes to `buf`.
@@ -189,14 +204,13 @@ pub trait Codec: Sized {
 #[inline]
 fn check(input: &[u8], n: usize) -> Result<(), CodecError> {
     if input.len() < n {
-        Err(CodecError::NotEnoughBytes {
-            needed: n,
-            available: input.len(),
-        })
+        Err(CodecError::NotEnoughBytes { needed: n, available: input.len() })
     } else {
         Ok(())
     }
 }
+
+// --- Integer impls ---
 
 macro_rules! impl_int {
     ($($t:ty),*) => {$(
@@ -208,7 +222,6 @@ macro_rules! impl_int {
                 let val = <$t>::from_be_bytes(input[..N].try_into().unwrap());
                 Ok((val, &input[N..]))
             }
-
             #[inline]
             fn encode(&self, buf: &mut Vec<u8>) {
                 buf.extend_from_slice(&self.to_be_bytes());
@@ -219,55 +232,70 @@ macro_rules! impl_int {
 
 impl_int!(u8, u16, u32, u64, i8, i16, i32, i64);
 
-/// Trait for types that support explicit big-endian encoding.
-///
-/// Used internally by the derive macro when a field is annotated with
-/// `#[codec(endian = "big")]`. You generally don't need to use this directly.
+// --- Float impls ---
+
+impl Codec for f32 {
+    #[inline]
+    fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        check(input, 4)?;
+        let val = f32::from_be_bytes(input[..4].try_into().unwrap());
+        Ok((val, &input[4..]))
+    }
+    #[inline]
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_be_bytes());
+    }
+}
+
+impl Codec for f64 {
+    #[inline]
+    fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        check(input, 8)?;
+        let val = f64::from_be_bytes(input[..8].try_into().unwrap());
+        Ok((val, &input[8..]))
+    }
+    #[inline]
+    fn encode(&self, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&self.to_be_bytes());
+    }
+}
+
+// --- Endian traits ---
+
+/// Trait for explicit big-endian encoding.
+#[doc(hidden)]
 pub trait CodecBe: Sized {
-    /// Decode from big-endian bytes.
     fn decode_be(input: &[u8]) -> Result<(Self, &[u8]), CodecError>;
-    /// Encode as big-endian bytes.
     fn encode_be(&self, buf: &mut Vec<u8>);
 }
 
-/// Trait for types that support little-endian encoding.
-///
-/// Used internally by the derive macro when a field is annotated with
-/// `#[codec(endian = "little")]`. You generally don't need to use this directly.
+/// Trait for little-endian encoding.
+#[doc(hidden)]
 pub trait CodecLe: Sized {
-    /// Decode from little-endian bytes.
     fn decode_le(input: &[u8]) -> Result<(Self, &[u8]), CodecError>;
-    /// Encode as little-endian bytes.
     fn encode_le(&self, buf: &mut Vec<u8>);
 }
 
-macro_rules! impl_int_be {
+macro_rules! impl_endian {
     ($($t:ty),*) => {$(
         impl CodecBe for $t {
             #[inline]
             fn decode_be(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
                 const N: usize = core::mem::size_of::<$t>();
                 check(input, N)?;
-                let val = <$t>::from_be_bytes(input[..N].try_into().unwrap());
-                Ok((val, &input[N..]))
+                Ok((<$t>::from_be_bytes(input[..N].try_into().unwrap()), &input[N..]))
             }
             #[inline]
             fn encode_be(&self, buf: &mut Vec<u8>) {
                 buf.extend_from_slice(&self.to_be_bytes());
             }
         }
-    )*};
-}
-
-macro_rules! impl_int_le {
-    ($($t:ty),*) => {$(
         impl CodecLe for $t {
             #[inline]
             fn decode_le(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
                 const N: usize = core::mem::size_of::<$t>();
                 check(input, N)?;
-                let val = <$t>::from_le_bytes(input[..N].try_into().unwrap());
-                Ok((val, &input[N..]))
+                Ok((<$t>::from_le_bytes(input[..N].try_into().unwrap()), &input[N..]))
             }
             #[inline]
             fn encode_le(&self, buf: &mut Vec<u8>) {
@@ -277,49 +305,26 @@ macro_rules! impl_int_le {
     )*};
 }
 
-impl_int_be!(u8, u16, u32, u64, i8, i16, i32, i64);
-impl_int_le!(u8, u16, u32, u64, i8, i16, i32, i64);
+impl_endian!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
-/// Decode a value using big-endian byte order.
-///
-/// Called by generated code for fields annotated with `#[codec(endian = "big")]`.
 #[doc(hidden)]
 #[inline]
-pub fn decode_be<T: CodecBe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
-    T::decode_be(input)
-}
+pub fn decode_be<T: CodecBe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> { T::decode_be(input) }
 
-/// Encode a value using big-endian byte order.
-///
-/// Called by generated code for fields annotated with `#[codec(endian = "big")]`.
 #[doc(hidden)]
 #[inline]
-pub fn encode_be<T: CodecBe>(val: &T, buf: &mut Vec<u8>) {
-    val.encode_be(buf);
-}
+pub fn encode_be<T: CodecBe>(val: &T, buf: &mut Vec<u8>) { val.encode_be(buf); }
 
-/// Decode a value using little-endian byte order.
-///
-/// Called by generated code for fields annotated with `#[codec(endian = "little")]`.
 #[doc(hidden)]
 #[inline]
-pub fn decode_le<T: CodecLe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
-    T::decode_le(input)
-}
+pub fn decode_le<T: CodecLe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> { T::decode_le(input) }
 
-/// Encode a value using little-endian byte order.
-///
-/// Called by generated code for fields annotated with `#[codec(endian = "little")]`.
 #[doc(hidden)]
 #[inline]
-pub fn encode_le<T: CodecLe>(val: &T, buf: &mut Vec<u8>) {
-    val.encode_le(buf);
-}
+pub fn encode_le<T: CodecLe>(val: &T, buf: &mut Vec<u8>) { val.encode_le(buf); }
 
-/// Trait for integer types usable as length prefixes.
-///
-/// Used internally by the derive macro when a field is annotated with
-/// `#[codec(len = "u8")]`, `#[codec(len = "u16")]`, etc.
+// --- Length prefix ---
+
 #[doc(hidden)]
 pub trait LenPrefix: Codec {
     fn to_usize(self) -> usize;
@@ -330,22 +335,22 @@ impl LenPrefix for u8 {
     #[inline] fn to_usize(self) -> usize { self as usize }
     #[inline] fn from_usize(n: usize) -> Self { n as u8 }
 }
+
 impl LenPrefix for u16 {
     #[inline] fn to_usize(self) -> usize { self as usize }
     #[inline] fn from_usize(n: usize) -> Self { n as u16 }
 }
+
 impl LenPrefix for u32 {
     #[inline] fn to_usize(self) -> usize { self as usize }
     #[inline] fn from_usize(n: usize) -> Self { n as u32 }
 }
+
 impl LenPrefix for u64 {
     #[inline] fn to_usize(self) -> usize { self as usize }
     #[inline] fn from_usize(n: usize) -> Self { n as u64 }
 }
 
-/// Trait for types that can be decoded with a custom length prefix.
-///
-/// Implemented for `Vec<T>` and `String`.
 #[doc(hidden)]
 pub trait CodecWithLen: Sized {
     fn decode_with_len<L: LenPrefix>(input: &[u8]) -> Result<(Self, &[u8]), CodecError>;
@@ -366,9 +371,7 @@ impl<T: Codec> CodecWithLen for Vec<T> {
     }
     fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
         L::from_usize(self.len()).encode(buf);
-        for item in self {
-            item.encode(buf);
-        }
+        for item in self { item.encode(buf); }
     }
 }
 
@@ -377,9 +380,7 @@ impl CodecWithLen for String {
         let (len, rest) = L::decode(input)?;
         let n = len.to_usize();
         check(rest, n)?;
-        let s = std::str::from_utf8(&rest[..n])
-            .map_err(|_| CodecError::InvalidUtf8)?
-            .to_owned();
+        let s = std::str::from_utf8(&rest[..n]).map_err(|_| CodecError::InvalidUtf8)?.to_owned();
         Ok((s, &rest[n..]))
     }
     fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
@@ -388,63 +389,106 @@ impl CodecWithLen for String {
     }
 }
 
-/// Decode a value using a custom length prefix type.
-///
-/// Called by generated code for fields annotated with `#[codec(len = "...")]`.
 #[doc(hidden)]
 #[inline]
 pub fn decode_with_len<L: LenPrefix, T: CodecWithLen>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
     T::decode_with_len::<L>(input)
 }
 
-/// Encode a value using a custom length prefix type.
-///
-/// Called by generated code for fields annotated with `#[codec(len = "...")]`.
 #[doc(hidden)]
 #[inline]
 pub fn encode_with_len<L: LenPrefix, T: CodecWithLen>(val: &T, buf: &mut Vec<u8>) {
     val.encode_with_len::<L>(buf);
 }
 
-/// Trait for types that have a length (used by `#[codec(min_len = N)]`).
+// --- Length validation ---
+
 #[doc(hidden)]
 pub trait HasLen {
     fn codec_len(&self) -> usize;
 }
 
 impl<T> HasLen for Vec<T> {
-    #[inline]
-    fn codec_len(&self) -> usize { self.len() }
+    #[inline] fn codec_len(&self) -> usize { self.len() }
 }
 
 impl HasLen for String {
-    #[inline]
-    fn codec_len(&self) -> usize { self.len() }
+    #[inline] fn codec_len(&self) -> usize { self.len() }
 }
 
-/// Check that a decoded value meets the minimum length requirement.
-///
-/// Called by generated code for fields annotated with `#[codec(min_len = N)]`.
 #[doc(hidden)]
 #[inline]
 pub fn check_min_len<T: HasLen>(val: &T, min: usize) -> Result<(), CodecError> {
     let actual = val.codec_len();
-    if actual < min {
-        Err(CodecError::TooShort { min, actual })
-    } else {
-        Ok(())
-    }
+    if actual < min { Err(CodecError::TooShort { min, actual }) } else { Ok(()) }
 }
 
+#[doc(hidden)]
+#[inline]
+pub fn check_max_len<T: HasLen>(val: &T, max: usize) -> Result<(), CodecError> {
+    let actual = val.codec_len();
+    if actual > max { Err(CodecError::TooLong { max, actual }) } else { Ok(()) }
+}
+
+// --- Skip helper ---
+
+#[doc(hidden)]
+#[inline]
+pub fn skip_decode<T: Default>() -> T { T::default() }
+
+// --- Padding helpers ---
+
+#[doc(hidden)]
+#[inline]
+pub fn decode_padding(input: &[u8], n: usize) -> Result<&[u8], CodecError> {
+    check(input, n)?;
+    Ok(&input[n..])
+}
+
+#[doc(hidden)]
+#[inline]
+pub fn encode_padding(buf: &mut Vec<u8>, n: usize) {
+    buf.extend(std::iter::repeat_n(0u8, n));
+}
+
+// --- Magic helpers ---
+
+#[doc(hidden)]
+pub fn decode_magic_u8(input: &[u8], expected: u8) -> Result<&[u8], CodecError> {
+    let (val, rest) = u8::decode(input)?;
+    if val != expected { return Err(CodecError::BadMagic); }
+    Ok(rest)
+}
+
+#[doc(hidden)]
+pub fn decode_magic_u16(input: &[u8], expected: u16) -> Result<&[u8], CodecError> {
+    let (val, rest) = u16::decode(input)?;
+    if val != expected { return Err(CodecError::BadMagic); }
+    Ok(rest)
+}
+
+#[doc(hidden)]
+pub fn decode_magic_u32(input: &[u8], expected: u32) -> Result<&[u8], CodecError> {
+    let (val, rest) = u32::decode(input)?;
+    if val != expected { return Err(CodecError::BadMagic); }
+    Ok(rest)
+}
+
+#[doc(hidden)]
+pub fn decode_magic_u64(input: &[u8], expected: u64) -> Result<&[u8], CodecError> {
+    let (val, rest) = u64::decode(input)?;
+    if val != expected { return Err(CodecError::BadMagic); }
+    Ok(rest)
+}
+
+// --- Standard type impls ---
+
 impl Codec for bool {
-    /// Decodes a single byte as a boolean (0 = false, nonzero = true).
     #[inline]
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (b, rest) = u8::decode(input)?;
         Ok((b != 0, rest))
     }
-
-    /// Encodes as a single byte: `1` for true, `0` for false.
     #[inline]
     fn encode(&self, buf: &mut Vec<u8>) {
         buf.push(if *self { 1 } else { 0 });
@@ -452,7 +496,6 @@ impl Codec for bool {
 }
 
 impl<T: Codec> Codec for Vec<T> {
-    /// Decodes a `u32` element count followed by that many elements.
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (len, mut rest) = u32::decode(input)?;
         let mut vec = Vec::with_capacity(len as usize);
@@ -463,33 +506,20 @@ impl<T: Codec> Codec for Vec<T> {
         }
         Ok((vec, rest))
     }
-
-    /// Encodes a `u32` element count followed by each element.
     fn encode(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode(buf);
-        for item in self {
-            item.encode(buf);
-        }
+        for item in self { item.encode(buf); }
     }
 }
 
 impl Codec for String {
-    /// Decodes a `u32` byte length followed by UTF-8 bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CodecError::InvalidUtf8`] if the bytes are not valid UTF-8.
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (len, rest) = u32::decode(input)?;
         let n = len as usize;
         check(rest, n)?;
-        let s = std::str::from_utf8(&rest[..n])
-            .map_err(|_| CodecError::InvalidUtf8)?
-            .to_owned();
+        let s = std::str::from_utf8(&rest[..n]).map_err(|_| CodecError::InvalidUtf8)?.to_owned();
         Ok((s, &rest[n..]))
     }
-
-    /// Encodes a `u32` byte length followed by the string's UTF-8 bytes.
     fn encode(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode(buf);
         buf.extend_from_slice(self.as_bytes());
@@ -497,32 +527,52 @@ impl Codec for String {
 }
 
 impl<T: Codec> Codec for Option<T> {
-    /// Decodes a `u8` tag: 0 means `None`, any other value means `Some(T)` follows.
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (tag, rest) = u8::decode(input)?;
         match tag {
             0 => Ok((None, rest)),
-            _ => {
-                let (val, rest) = T::decode(rest)?;
-                Ok((Some(val), rest))
-            }
+            _ => { let (val, rest) = T::decode(rest)?; Ok((Some(val), rest)) }
         }
     }
-
-    /// Encodes `0u8` for `None`, or `1u8` followed by the value for `Some`.
     fn encode(&self, buf: &mut Vec<u8>) {
         match self {
             None => 0u8.encode(buf),
-            Some(val) => {
-                1u8.encode(buf);
-                val.encode(buf);
-            }
+            Some(val) => { 1u8.encode(buf); val.encode(buf); }
         }
     }
 }
 
+impl<T: Codec> Codec for Box<T> {
+    #[inline]
+    fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        let (val, rest) = T::decode(input)?;
+        Ok((Box::new(val), rest))
+    }
+    #[inline]
+    fn encode(&self, buf: &mut Vec<u8>) {
+        (**self).encode(buf);
+    }
+}
+
+impl<K: Codec + Eq + Hash, V: Codec> Codec for HashMap<K, V> {
+    fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        let (len, mut rest) = u32::decode(input)?;
+        let mut map = HashMap::with_capacity(len as usize);
+        for _ in 0..len {
+            let (k, remaining) = K::decode(rest)?;
+            let (v, remaining) = V::decode(remaining)?;
+            map.insert(k, v);
+            rest = remaining;
+        }
+        Ok((map, rest))
+    }
+    fn encode(&self, buf: &mut Vec<u8>) {
+        (self.len() as u32).encode(buf);
+        for (k, v) in self { k.encode(buf); v.encode(buf); }
+    }
+}
+
 impl<T: Codec, const N: usize> Codec for [T; N] {
-    /// Decodes exactly `N` elements sequentially (no length prefix on the wire).
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let mut rest = input;
         let mut arr: [core::mem::MaybeUninit<T>; N] =
@@ -537,11 +587,33 @@ impl<T: Codec, const N: usize> Codec for [T; N] {
         core::mem::forget(arr);
         Ok((result, rest))
     }
-
-    /// Encodes exactly `N` elements sequentially (no length prefix).
     fn encode(&self, buf: &mut Vec<u8>) {
-        for item in self {
-            item.encode(buf);
-        }
+        for item in self { item.encode(buf); }
     }
 }
+
+// --- Tuple impls ---
+
+macro_rules! impl_tuple {
+    ($($idx:tt $T:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<$($T: Codec),+> Codec for ($($T,)+) {
+            fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+                $(let ($T, input) = $T::decode(input)?;)+
+                Ok((($($T,)+), input))
+            }
+            fn encode(&self, buf: &mut Vec<u8>) {
+                $(self.$idx.encode(buf);)+
+            }
+        }
+    };
+}
+
+impl_tuple!(0 A);
+impl_tuple!(0 A, 1 B);
+impl_tuple!(0 A, 1 B, 2 C);
+impl_tuple!(0 A, 1 B, 2 C, 3 D);
+impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E);
+impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F);
+impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G);
+impl_tuple!(0 A, 1 B, 2 C, 3 D, 4 E, 5 F, 6 G, 7 H);
