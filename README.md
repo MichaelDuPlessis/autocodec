@@ -4,14 +4,17 @@ A Rust derive macro for automatic binary protocol serialization and deserializat
 
 ## Features
 
-- `#[derive(Codec)]` on structs and enums
-- Big-endian by default (network byte order)
-- Per-field and container-level endianness control
+- `#[derive(Codec)]` on structs and enums — generates encode/decode automatically
+- Big-endian (network byte order) by default, per-field or container-level little-endian override
 - Configurable length prefixes (`u8`, `u16`, `u32`, `u64`)
-- Custom enum discriminant values and types
-- Field validation, padding, magic constants, skip
+- Custom enum discriminants via `#[repr(u8)]` + native `= N` syntax
+- Bitfield packing with `#[codec(bits = N)]`
+- Field validation, padding, magic constants, skip with custom defaults
 - Custom codec delegation via `#[codec(with = "module")]`
-- Allocation guards against malicious inputs
+- Zero-copy parsing with `Bytes<'a>`
+- Allocation guards against malicious inputs (16 MiB limit)
+- Computed `encoded_size()` without allocation
+- Error context with field names for debugging
 - Composable — any `Codec` type works as a field
 
 ## Quick Start
@@ -43,6 +46,9 @@ assert_eq!(decoded, header);
 
 // Decode exact (errors on trailing bytes)
 let decoded = Header::decode_exact(&buf).unwrap();
+
+// Pre-calculate size without encoding
+assert_eq!(header.encoded_size(), 6);
 ```
 
 ## Supported Types
@@ -60,6 +66,7 @@ let decoded = Header::decode_exact(&buf).unwrap();
 | `Box<T>` | transparent |
 | `(A, B, ...)` | sequential (up to 8) |
 | `HashMap<K, V>` | u32 length + pairs |
+| `Bytes<'a>` | u32 length + bytes (zero-copy) |
 
 ## Attributes
 
@@ -68,14 +75,24 @@ let decoded = Header::decode_exact(&buf).unwrap();
 ```rust
 #[derive(Codec)]
 #[codec(endian = "little")]              // default endianness for all fields
-#[codec(discriminant_type = "u16")]      // enum discriminant size (u8/u16/u32)
+#[codec(discriminant_type = "u16")]      // enum discriminant size
 ```
 
-### Variant-level
+### Enum discriminants
+
+Use Rust's native `#[repr]` and `= N` syntax:
 
 ```rust
-#[codec(discriminant = 100)]             // custom discriminant value
+#[derive(Codec)]
+#[repr(u8)]
+enum Command {
+    Ping = 1,
+    Pong = 2,
+    Data = 10,
+}
 ```
+
+Or use `#[codec(discriminant = N)]` on individual variants.
 
 ### Field-level
 
@@ -90,10 +107,52 @@ let decoded = Header::decode_exact(&buf).unwrap();
 #[codec(magic = 0xDEADBEEF)]             // constant value, error on mismatch
 #[codec(validate = "is_valid")]          // fn(&T) -> bool, error if false
 #[codec(with = "my_module")]             // custom encode/decode functions
+#[codec(bits = 4)]                       // bitfield: pack into N bits
 ```
 
-## Error Types
+## Bitfields
 
+Consecutive fields annotated with `#[codec(bits = N)]` are packed into the minimum number of bytes (MSB-first):
+
+```rust
+#[derive(Codec)]
+struct TcpFlags {
+    #[codec(bits = 4)]
+    version: u8,
+    #[codec(bits = 4)]
+    header_len: u8,
+    #[codec(bits = 1)]
+    syn: u8,
+    #[codec(bits = 1)]
+    ack: u8,
+    #[codec(bits = 6)]
+    reserved: u8,
+    // Total: 16 bits = 2 bytes on the wire
+}
+```
+
+## Zero-Copy Parsing
+
+For read-only access to byte slices without allocation:
+
+```rust
+use autocodec::Bytes;
+
+let data = [0, 0, 0, 3, 0xAA, 0xBB, 0xCC];
+let (bytes, rest) = Bytes::decode(&data).unwrap();
+assert_eq!(&*bytes, &[0xAA, 0xBB, 0xCC]);
+// `bytes` borrows directly from `data` — no copy
+```
+
+## Error Handling
+
+Errors include field context for debugging:
+
+```rust
+// "in field `version`: not enough bytes: needed 2, have 1"
+```
+
+Error types:
 - `NotEnoughBytes` — input too short
 - `InvalidUtf8` — string not valid UTF-8
 - `UnknownDiscriminant` — enum variant not recognized
@@ -101,7 +160,12 @@ let decoded = Header::decode_exact(&buf).unwrap();
 - `BadMagic` — magic constant mismatch
 - `ValidationFailed` — custom validation returned false
 - `TrailingBytes` — unexpected data after `decode_exact`
-- `AllocationTooLarge` — length prefix exceeds safety limit (16 MiB)
+- `AllocationTooLarge` — length prefix exceeds 16 MiB safety limit
+- `FieldError` — wraps any of the above with the field name
+
+## About
+
+This library was entirely AI-generated (by [Kiro](https://kiro.dev)) under my supervision and direction. I reviewed all the code, so any questionable decisions are mine — not the AI's.
 
 ## License
 
