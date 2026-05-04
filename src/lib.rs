@@ -356,6 +356,7 @@ impl<T: Codec, const N: usize> Codec for [T; N] {
             rest = remaining;
         }
         let result = unsafe { core::ptr::read(&arr as *const _ as *const [T; N]) };
+        #[allow(clippy::forget_non_drop)]
         core::mem::forget(arr);
         Ok((result, rest))
     }
