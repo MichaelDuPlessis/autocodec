@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Field, Fields, Lit, Meta, parse_macro_input};
 
-/// Derive macro that generates [`Codec`](trait@autocodec::Codec) implementations.
+/// Derive macro that generates `Codec` trait implementations.
 ///
 /// # Structs
 ///
