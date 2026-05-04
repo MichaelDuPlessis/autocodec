@@ -80,15 +80,17 @@ fn field_endian(field: &Field) -> Option<Endian> {
 
 fn decode_expr(ty: &syn::Type, endian: Option<Endian>) -> proc_macro2::TokenStream {
     match endian {
+        Some(Endian::Big) => quote! { autocodec::decode_be::<#ty>(input)? },
         Some(Endian::Little) => quote! { autocodec::decode_le::<#ty>(input)? },
-        _ => quote! { <#ty as autocodec::Codec>::decode(input)? },
+        None => quote! { <#ty as autocodec::Codec>::decode(input)? },
     }
 }
 
 fn encode_expr(field_expr: proc_macro2::TokenStream, endian: Option<Endian>) -> proc_macro2::TokenStream {
     match endian {
+        Some(Endian::Big) => quote! { autocodec::encode_be(&#field_expr, buf); },
         Some(Endian::Little) => quote! { autocodec::encode_le(&#field_expr, buf); },
-        _ => quote! { autocodec::Codec::encode(&#field_expr, buf); },
+        None => quote! { autocodec::Codec::encode(&#field_expr, buf); },
     }
 }
 
@@ -234,8 +236,9 @@ fn impl_enum(
                 let endians: Vec<_> = f.named.iter().map(field_endian).collect();
                 let stmts = field_names.iter().zip(endians.iter()).map(|(n, e)| {
                     match e {
+                        Some(Endian::Big) => quote! { autocodec::encode_be(#n, buf); },
                         Some(Endian::Little) => quote! { autocodec::encode_le(#n, buf); },
-                        _ => quote! { autocodec::Codec::encode(#n, buf); },
+                        None => quote! { autocodec::Codec::encode(#n, buf); },
                     }
                 });
                 quote! {
@@ -252,8 +255,9 @@ fn impl_enum(
                     .collect();
                 let stmts = field_idents.iter().zip(endians.iter()).map(|(id, e)| {
                     match e {
+                        Some(Endian::Big) => quote! { autocodec::encode_be(#id, buf); },
                         Some(Endian::Little) => quote! { autocodec::encode_le(#id, buf); },
-                        _ => quote! { autocodec::Codec::encode(#id, buf); },
+                        None => quote! { autocodec::Codec::encode(#id, buf); },
                     }
                 });
                 quote! {

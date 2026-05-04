@@ -184,7 +184,10 @@ pub trait Codec: Sized {
 #[inline]
 fn check(input: &[u8], n: usize) -> Result<(), CodecError> {
     if input.len() < n {
-        Err(CodecError::NotEnoughBytes { needed: n, available: input.len() })
+        Err(CodecError::NotEnoughBytes {
+            needed: n,
+            available: input.len(),
+        })
     } else {
         Ok(())
     }
@@ -200,6 +203,7 @@ macro_rules! impl_int {
                 let val = <$t>::from_be_bytes(input[..N].try_into().unwrap());
                 Ok((val, &input[N..]))
             }
+
             #[inline]
             fn encode(&self, buf: &mut Vec<u8>) {
                 buf.extend_from_slice(&self.to_be_bytes());
@@ -210,6 +214,17 @@ macro_rules! impl_int {
 
 impl_int!(u8, u16, u32, u64, i8, i16, i32, i64);
 
+/// Trait for types that support explicit big-endian encoding.
+///
+/// Used internally by the derive macro when a field is annotated with
+/// `#[codec(endian = "big")]`. You generally don't need to use this directly.
+pub trait CodecBe: Sized {
+    /// Decode from big-endian bytes.
+    fn decode_be(input: &[u8]) -> Result<(Self, &[u8]), CodecError>;
+    /// Encode as big-endian bytes.
+    fn encode_be(&self, buf: &mut Vec<u8>);
+}
+
 /// Trait for types that support little-endian encoding.
 ///
 /// Used internally by the derive macro when a field is annotated with
@@ -219,6 +234,24 @@ pub trait CodecLe: Sized {
     fn decode_le(input: &[u8]) -> Result<(Self, &[u8]), CodecError>;
     /// Encode as little-endian bytes.
     fn encode_le(&self, buf: &mut Vec<u8>);
+}
+
+macro_rules! impl_int_be {
+    ($($t:ty),*) => {$(
+        impl CodecBe for $t {
+            #[inline]
+            fn decode_be(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+                const N: usize = core::mem::size_of::<$t>();
+                check(input, N)?;
+                let val = <$t>::from_be_bytes(input[..N].try_into().unwrap());
+                Ok((val, &input[N..]))
+            }
+            #[inline]
+            fn encode_be(&self, buf: &mut Vec<u8>) {
+                buf.extend_from_slice(&self.to_be_bytes());
+            }
+        }
+    )*};
 }
 
 macro_rules! impl_int_le {
@@ -239,7 +272,26 @@ macro_rules! impl_int_le {
     )*};
 }
 
+impl_int_be!(u8, u16, u32, u64, i8, i16, i32, i64);
 impl_int_le!(u8, u16, u32, u64, i8, i16, i32, i64);
+
+/// Decode a value using big-endian byte order.
+///
+/// Called by generated code for fields annotated with `#[codec(endian = "big")]`.
+#[doc(hidden)]
+#[inline]
+pub fn decode_be<T: CodecBe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
+    T::decode_be(input)
+}
+
+/// Encode a value using big-endian byte order.
+///
+/// Called by generated code for fields annotated with `#[codec(endian = "big")]`.
+#[doc(hidden)]
+#[inline]
+pub fn encode_be<T: CodecBe>(val: &T, buf: &mut Vec<u8>) {
+    val.encode_be(buf);
+}
 
 /// Decode a value using little-endian byte order.
 ///
