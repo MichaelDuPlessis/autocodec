@@ -2,9 +2,15 @@
 name = "autocodec"
 version = "0.1.0"
 edition = "2024"
+description = "Derive macro for automatic binary protocol serialization and deserialization"
+license = "MIT"
+repository = "https://github.com/MichaelDuPlessis/autocodec"
+readme = "README.md"
+keywords = ["binary", "protocol", "codec", "derive", "serialization"]
+categories = ["encoding", "parsing", "network-programming"]
 
 [dependencies]
-autocodec_derive = { path = "autocodec_derive" }
+autocodec_derive = { path = "autocodec_derive", version = "0.1.0" }
 
 [workspace]
 members = [".", "autocodec_derive"]
