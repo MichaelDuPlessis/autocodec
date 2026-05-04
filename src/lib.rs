@@ -141,7 +141,15 @@ pub enum CodecError {
     BadMagic,
     /// A custom validation function failed.
     ValidationFailed,
+    /// Input had leftover bytes after decoding (used by `decode_exact`).
+    TrailingBytes { count: usize },
+    /// A length prefix would require an unreasonably large allocation.
+    AllocationTooLarge { requested: usize },
 }
+
+/// Maximum number of elements allowed in a single Vec/String decode.
+/// Prevents OOM from malicious length prefixes. Default: 16 MiB worth of elements.
+pub const MAX_DECODE_LEN: usize = 16 * 1024 * 1024;
 
 impl core::fmt::Display for CodecError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -161,6 +169,12 @@ impl core::fmt::Display for CodecError {
             }
             Self::BadMagic => write!(f, "magic value mismatch"),
             Self::ValidationFailed => write!(f, "validation failed"),
+            Self::TrailingBytes { count } => {
+                write!(f, "trailing bytes: {count} unexpected bytes after decode")
+            }
+            Self::AllocationTooLarge { requested } => {
+                write!(f, "allocation too large: {requested} elements requested")
+            }
         }
     }
 }
@@ -199,6 +213,22 @@ pub trait Codec: Sized {
 
     /// Encode this value by appending bytes to `buf`.
     fn encode(&self, buf: &mut Vec<u8>);
+
+    /// Decode a value, returning an error if there are leftover bytes.
+    fn decode_exact(input: &[u8]) -> Result<Self, CodecError> {
+        let (val, rest) = Self::decode(input)?;
+        if !rest.is_empty() {
+            return Err(CodecError::TrailingBytes { count: rest.len() });
+        }
+        Ok(val)
+    }
+
+    /// Calculate the encoded size in bytes without actually encoding.
+    fn encoded_size(&self) -> usize {
+        let mut buf = Vec::new();
+        self.encode(&mut buf);
+        buf.len()
+    }
 }
 
 #[inline]
@@ -230,7 +260,7 @@ macro_rules! impl_int {
     )*};
 }
 
-impl_int!(u8, u16, u32, u64, i8, i16, i32, i64);
+impl_int!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128);
 
 // --- Float impls ---
 
@@ -305,7 +335,7 @@ macro_rules! impl_endian {
     )*};
 }
 
-impl_endian!(u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
+impl_endian!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
 
 #[doc(hidden)]
 #[inline]
@@ -361,6 +391,9 @@ impl<T: Codec> CodecWithLen for Vec<T> {
     fn decode_with_len<L: LenPrefix>(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (len, mut rest) = L::decode(input)?;
         let count = len.to_usize();
+        if count > MAX_DECODE_LEN {
+            return Err(CodecError::AllocationTooLarge { requested: count });
+        }
         let mut vec = Vec::with_capacity(count);
         for _ in 0..count {
             let (item, remaining) = T::decode(rest)?;
@@ -379,6 +412,9 @@ impl CodecWithLen for String {
     fn decode_with_len<L: LenPrefix>(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (len, rest) = L::decode(input)?;
         let n = len.to_usize();
+        if n > MAX_DECODE_LEN {
+            return Err(CodecError::AllocationTooLarge { requested: n });
+        }
         check(rest, n)?;
         let s = std::str::from_utf8(&rest[..n]).map_err(|_| CodecError::InvalidUtf8)?.to_owned();
         Ok((s, &rest[n..]))
@@ -498,8 +534,12 @@ impl Codec for bool {
 impl<T: Codec> Codec for Vec<T> {
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (len, mut rest) = u32::decode(input)?;
-        let mut vec = Vec::with_capacity(len as usize);
-        for _ in 0..len {
+        let count = len as usize;
+        if count > MAX_DECODE_LEN {
+            return Err(CodecError::AllocationTooLarge { requested: count });
+        }
+        let mut vec = Vec::with_capacity(count);
+        for _ in 0..count {
             let (item, remaining) = T::decode(rest)?;
             vec.push(item);
             rest = remaining;
@@ -516,6 +556,9 @@ impl Codec for String {
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let (len, rest) = u32::decode(input)?;
         let n = len as usize;
+        if n > MAX_DECODE_LEN {
+            return Err(CodecError::AllocationTooLarge { requested: n });
+        }
         check(rest, n)?;
         let s = std::str::from_utf8(&rest[..n]).map_err(|_| CodecError::InvalidUtf8)?.to_owned();
         Ok((s, &rest[n..]))

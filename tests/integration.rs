@@ -510,3 +510,116 @@ fn remaining_bytes_preserved() {
     let (_, rest) = Header::decode(&buf).unwrap();
     assert_eq!(rest, &[0xAA, 0xBB]);
 }
+
+// --- u128/i128 ---
+
+#[derive(Debug, PartialEq, Codec)]
+struct BigInt {
+    val: u128,
+    signed: i128,
+}
+
+#[test]
+fn roundtrip_u128() {
+    let val = BigInt { val: u128::MAX, signed: -1 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    assert_eq!(buf.len(), 32);
+    let (decoded, _) = BigInt::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+}
+
+// --- decode_exact ---
+
+#[test]
+fn decode_exact_success() {
+    let h = Header { version: 1, length: 2, flags: 3 };
+    let mut buf = Vec::new();
+    h.encode(&mut buf);
+    let decoded = Header::decode_exact(&buf).unwrap();
+    assert_eq!(decoded, h);
+}
+
+#[test]
+fn decode_exact_trailing_bytes() {
+    let h = Header { version: 1, length: 2, flags: 3 };
+    let mut buf = Vec::new();
+    h.encode(&mut buf);
+    buf.push(0xFF);
+    let result = Header::decode_exact(&buf);
+    assert_eq!(result, Err(CodecError::TrailingBytes { count: 1 }));
+}
+
+// --- encoded_size ---
+
+#[test]
+fn encoded_size_works() {
+    let h = Header { version: 1, length: 2, flags: 3 };
+    assert_eq!(h.encoded_size(), 7);
+}
+
+// --- allocation guard ---
+
+#[test]
+fn allocation_guard_rejects_huge_vec() {
+    // Craft a buffer with a u32 length prefix of 0x01000001 (16M+1)
+    let mut buf = Vec::new();
+    (autocodec::MAX_DECODE_LEN as u32 + 1).encode(&mut buf);
+    let result = <Vec<u8>>::decode(&buf);
+    assert!(matches!(result, Err(CodecError::AllocationTooLarge { .. })));
+}
+
+// --- with module ---
+
+mod custom_codec {
+    use autocodec::CodecError;
+
+    pub fn decode(input: &[u8]) -> Result<(u16, &[u8]), CodecError> {
+        // decode as little-endian u16
+        if input.len() < 2 {
+            return Err(CodecError::NotEnoughBytes { needed: 2, available: input.len() });
+        }
+        let val = u16::from_le_bytes([input[0], input[1]]);
+        Ok((val, &input[2..]))
+    }
+
+    pub fn encode(val: &u16, buf: &mut Vec<u8>) {
+        buf.extend_from_slice(&val.to_le_bytes());
+    }
+}
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithCustomCodec {
+    #[codec(with = "custom_codec")]
+    value: u16,
+}
+
+#[test]
+fn with_module_roundtrip() {
+    let val = WithCustomCodec { value: 0x0102 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    assert_eq!(&buf, &[0x02, 0x01]); // little-endian via custom module
+    let (decoded, _) = WithCustomCodec::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+}
+
+// --- default expr ---
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithDefault {
+    id: u32,
+    #[codec(skip, default = "42")]
+    answer: u32,
+}
+
+#[test]
+fn skip_with_custom_default() {
+    let val = WithDefault { id: 1, answer: 99 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    assert_eq!(buf.len(), 4); // only id encoded
+    let (decoded, _) = WithDefault::decode(&buf).unwrap();
+    assert_eq!(decoded.id, 1);
+    assert_eq!(decoded.answer, 42); // custom default, not 0
+}

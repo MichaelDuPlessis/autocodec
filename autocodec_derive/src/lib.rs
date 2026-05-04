@@ -71,6 +71,8 @@ struct FieldAttrs {
     padding: Option<usize>,
     magic: Option<u64>,
     validate: Option<String>,
+    with_module: Option<String>,
+    default_expr: Option<String>,
 }
 
 fn parse_container_attrs(input: &DeriveInput) -> ContainerAttrs {
@@ -107,59 +109,77 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
     let mut attrs = FieldAttrs {
         endian: None, len: None, min_len: None, max_len: None,
         skip: false, padding: None, magic: None, validate: None,
+        with_module: None, default_expr: None,
     };
     for attr in &field.attrs {
         if !attr.path().is_ident("codec") { continue; }
-        // Handle path-only attrs like #[codec(skip)]
-        if let Ok(Meta::Path(p)) = attr.parse_args::<Meta>() {
-            if p.is_ident("skip") { attrs.skip = true; }
-            continue;
-        }
-        if let Ok(Meta::NameValue(nv)) = attr.parse_args::<Meta>() {
-            if nv.path.is_ident("endian")
-                && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
-            {
-                attrs.endian = match s.value().as_str() {
-                    "little" => Some(Endian::Little),
-                    "big" => Some(Endian::Big),
-                    _ => None,
-                };
-            }
-            if nv.path.is_ident("len")
-                && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
-            {
-                attrs.len = match s.value().as_str() {
-                    "u8" => Some(LenType::U8),
-                    "u16" => Some(LenType::U16),
-                    "u32" => Some(LenType::U32),
-                    "u64" => Some(LenType::U64),
-                    _ => None,
-                };
-            }
-            if nv.path.is_ident("min_len")
-                && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
-            {
-                attrs.min_len = i.base10_parse().ok();
-            }
-            if nv.path.is_ident("max_len")
-                && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
-            {
-                attrs.max_len = i.base10_parse().ok();
-            }
-            if nv.path.is_ident("padding")
-                && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
-            {
-                attrs.padding = i.base10_parse().ok();
-            }
-            if nv.path.is_ident("magic")
-                && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
-            {
-                attrs.magic = i.base10_parse().ok();
-            }
-            if nv.path.is_ident("validate")
-                && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
-            {
-                attrs.validate = Some(s.value());
+        let nested = attr.parse_args_with(
+            syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated
+        );
+        let Ok(nested) = nested else { continue; };
+        for meta in nested {
+            match meta {
+                Meta::Path(p) if p.is_ident("skip") => {
+                    attrs.skip = true;
+                }
+                Meta::NameValue(nv) => {
+                    if nv.path.is_ident("endian")
+                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                    {
+                        attrs.endian = match s.value().as_str() {
+                            "little" => Some(Endian::Little),
+                            "big" => Some(Endian::Big),
+                            _ => None,
+                        };
+                    }
+                    if nv.path.is_ident("len")
+                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                    {
+                        attrs.len = match s.value().as_str() {
+                            "u8" => Some(LenType::U8),
+                            "u16" => Some(LenType::U16),
+                            "u32" => Some(LenType::U32),
+                            "u64" => Some(LenType::U64),
+                            _ => None,
+                        };
+                    }
+                    if nv.path.is_ident("min_len")
+                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                    {
+                        attrs.min_len = i.base10_parse().ok();
+                    }
+                    if nv.path.is_ident("max_len")
+                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                    {
+                        attrs.max_len = i.base10_parse().ok();
+                    }
+                    if nv.path.is_ident("padding")
+                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                    {
+                        attrs.padding = i.base10_parse().ok();
+                    }
+                    if nv.path.is_ident("magic")
+                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                    {
+                        attrs.magic = i.base10_parse().ok();
+                    }
+                    if nv.path.is_ident("validate")
+                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                    {
+                        attrs.validate = Some(s.value());
+                    }
+                    if nv.path.is_ident("with")
+                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                    {
+                        attrs.with_module = Some(s.value());
+                    }
+                    if nv.path.is_ident("default")
+                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                    {
+                        attrs.default_expr = Some(s.value());
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -234,16 +254,29 @@ fn decode_stmt(binding: proc_macro2::TokenStream, ty: &syn::Type, attrs: &FieldA
     // Magic field: decode and validate constant, bind default
     if let Some(magic) = attrs.magic {
         let magic_lit = syn::LitInt::new(&format!("{magic}"), proc_macro2::Span::call_site());
-        // Determine magic size from type
         return quote! {
             let input = autocodec::decode_magic_u32(input, #magic_lit as u32)?;
             let #binding = <#ty as Default>::default();
         };
     }
 
-    // Skip field
+    // Skip field with optional custom default
     if attrs.skip {
+        if let Some(ref expr_str) = attrs.default_expr {
+            let expr: syn::Expr = syn::parse_str(expr_str).expect("invalid default expression");
+            return quote! { let #binding = #expr; };
+        }
         return quote! { let #binding = autocodec::skip_decode::<#ty>(); };
+    }
+
+    // Custom with module
+    if let Some(ref module) = attrs.with_module {
+        let mod_path: syn::Path = syn::parse_str(module).expect("invalid with module path");
+        let mut stmts = quote! { let (#binding, input) = #mod_path::decode(input)?; };
+        if let Some(pad) = attrs.padding {
+            stmts = quote! { #stmts let input = autocodec::decode_padding(input, #pad)?; };
+        }
+        return stmts;
     }
 
     let expr = decode_expr(ty, attrs, container);
@@ -286,6 +319,19 @@ fn encode_field_stmt(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs, c
         } else {
             quote! {}
         };
+    }
+
+    if let Some(ref module) = attrs.with_module {
+        let mod_path: syn::Path = syn::parse_str(module).expect("invalid with module path");
+        let mut s = if is_ref {
+            quote! { #mod_path::encode(#field_expr, buf); }
+        } else {
+            quote! { #mod_path::encode(&#field_expr, buf); }
+        };
+        if let Some(pad) = attrs.padding {
+            s = quote! { #s autocodec::encode_padding(buf, #pad); };
+        }
+        return s;
     }
 
     let mut s = if is_ref {
