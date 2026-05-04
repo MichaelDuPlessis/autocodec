@@ -1,10 +1,11 @@
 //! # autocodec
 //!
 //! Derive macro for automatic binary protocol serialization and deserialization.
+//! Zero runtime dependencies.
 //!
 //! Annotate your structs and enums with `#[derive(Codec)]` to automatically generate
 //! efficient binary encoding and decoding. All multi-byte integers use big-endian (network
-//! byte order) by default, with per-field override via `#[codec(endian = "little")]`.
+//! byte order) by default.
 //!
 //! ## Quick Start
 //!
@@ -28,34 +29,58 @@
 //! let (decoded, remaining) = Header::decode(&buf).unwrap();
 //! assert_eq!(decoded, header);
 //! assert!(remaining.is_empty());
+//!
+//! // Decode exact (errors if trailing bytes)
+//! let decoded = Header::decode_exact(&buf).unwrap();
+//!
+//! // Pre-calculate encoded size without allocating
+//! assert_eq!(header.encoded_size(), 6);
 //! ```
 //!
 //! ## Enums
 //!
-//! Enums are prefixed with a discriminant byte (variant index, starting at 0).
-//! Unit, tuple, and struct variants are all supported.
+//! Enums use a discriminant byte. Supports `#[repr(u8)]` with native `= N` syntax:
+//!
+//! ```
+//! use autocodec::Codec;
+//!
+//! #[derive(Debug, PartialEq, Codec)]
+//! #[repr(u8)]
+//! enum Command {
+//!     Ping = 1,
+//!     Pong = 2,
+//!     Data = 10,
+//! }
+//!
+//! let mut buf = Vec::new();
+//! Command::Data.encode(&mut buf);
+//! assert_eq!(buf, [10]);
+//! let (cmd, _) = Command::decode(&[2]).unwrap();
+//! assert_eq!(cmd, Command::Pong);
+//! ```
+//!
+//! Enums with fields work too:
 //!
 //! ```
 //! use autocodec::Codec;
 //!
 //! #[derive(Debug, PartialEq, Codec)]
 //! enum Message {
-//!     Ping,                              // discriminant 0
-//!     Data { id: u32, payload: Vec<u8> }, // discriminant 1
-//!     Ack(u64),                          // discriminant 2
+//!     Ping,
+//!     Data { id: u32, payload: Vec<u8> },
+//!     Ack(u64),
 //! }
 //!
 //! let msg = Message::Data { id: 42, payload: vec![1, 2, 3] };
 //! let mut buf = Vec::new();
 //! msg.encode(&mut buf);
-//!
 //! let (decoded, _) = Message::decode(&buf).unwrap();
 //! assert_eq!(decoded, msg);
 //! ```
 //!
 //! ## Composability
 //!
-//! Any field whose type implements `Codec` works automatically, including nested structs:
+//! Any field whose type implements `Codec` works automatically:
 //!
 //! ```
 //! use autocodec::Codec;
@@ -76,30 +101,197 @@
 //! assert_eq!(decoded, pkt);
 //! ```
 //!
-//! ## Per-field Endianness
+//! ## Endianness
+//!
+//! Per-field or container-level:
+//!
+//! ```
+//! use autocodec::Codec;
+//!
+//! // Container-level: all fields default to little-endian
+//! #[derive(Debug, PartialEq, Codec)]
+//! #[codec(endian = "little")]
+//! struct LittlePacket {
+//!     a: u16,
+//!     b: u32,
+//! }
+//!
+//! // Per-field override
+//! #[derive(Debug, PartialEq, Codec)]
+//! struct MixedPacket {
+//!     #[codec(endian = "little")]
+//!     little: u32,
+//!     big: u32, // default big-endian
+//! }
+//! ```
+//!
+//! ## Length Prefixes
 //!
 //! ```
 //! use autocodec::Codec;
 //!
 //! #[derive(Debug, PartialEq, Codec)]
-//! struct Mixed {
-//!     #[codec(endian = "big")]
-//!     big_val: u32,
-//!     #[codec(endian = "little")]
-//!     little_val: u32,
+//! struct Compact {
+//!     #[codec(len = "u8")]
+//!     items: Vec<u8>,       // 1-byte length prefix (max 255)
+//!     #[codec(len = "u16")]
+//!     name: String,         // 2-byte length prefix
+//!     data: Vec<u8>,        // default u32 length prefix
 //! }
+//! ```
+//!
+//! ## Length Validation
+//!
+//! ```
+//! use autocodec::Codec;
+//!
+//! #[derive(Debug, PartialEq, Codec)]
+//! struct Bounded {
+//!     #[codec(min_len = 1)]
+//!     items: Vec<u8>,       // must have at least 1 element
+//!     #[codec(max_len = 100)]
+//!     name: String,         // must be at most 100 bytes
+//! }
+//! ```
+//!
+//! ## Bitfields
+//!
+//! Consecutive `bits` fields are packed into minimum bytes (MSB-first):
+//!
+//! ```
+//! use autocodec::Codec;
+//!
+//! #[derive(Debug, PartialEq, Codec)]
+//! struct Flags {
+//!     #[codec(bits = 4)]
+//!     version: u8,
+//!     #[codec(bits = 4)]
+//!     header_len: u8,
+//!     #[codec(bits = 1)]
+//!     syn: u8,
+//!     #[codec(bits = 1)]
+//!     ack: u8,
+//!     #[codec(bits = 6)]
+//!     reserved: u8,
+//!     // 16 bits total = 2 bytes on the wire
+//! }
+//!
+//! let flags = Flags { version: 4, header_len: 5, syn: 1, ack: 0, reserved: 0 };
+//! let mut buf = Vec::new();
+//! flags.encode(&mut buf);
+//! assert_eq!(buf.len(), 2);
+//! ```
+//!
+//! ## Skip, Default, Padding
+//!
+//! ```
+//! use autocodec::Codec;
+//!
+//! #[derive(Debug, PartialEq, Codec)]
+//! struct Protocol {
+//!     id: u32,
+//!     #[codec(skip)]
+//!     cached: u32,              // not on wire, Default on decode
+//!     #[codec(skip, default = "42")]
+//!     answer: u32,              // not on wire, custom default
+//!     #[codec(padding = 3)]
+//!     flags: u8,                // 3 zero bytes inserted after this field
+//! }
+//! ```
+//!
+//! ## Magic Constants
+//!
+//! ```
+//! use autocodec::{Codec, CodecError};
+//!
+//! #[derive(Debug, PartialEq, Codec)]
+//! struct Frame {
+//!     #[codec(magic = 0xCAFEBABE)]
+//!     _magic: u32,              // validated on decode, error if mismatch
+//!     version: u16,
+//! }
+//!
+//! // Decoding with wrong magic fails:
+//! let bad = [0, 0, 0, 0, 0, 1];
+//! assert!(Frame::decode(&bad).is_err());
+//! ```
+//!
+//! ## Validation
+//!
+//! ```
+//! use autocodec::{Codec, CodecError};
+//!
+//! fn is_nonzero(val: &u16) -> bool { *val != 0 }
+//!
+//! #[derive(Debug, PartialEq, Codec)]
+//! struct Config {
+//!     #[codec(validate = "is_nonzero")]
+//!     port: u16,
+//! }
+//!
+//! let bad = [0, 0]; // port = 0
+//! assert!(Config::decode(&bad).is_err());
+//! ```
+//!
+//! ## Custom Codec
+//!
+//! Delegate encode/decode to a module with `decode` and `encode` functions:
+//!
+//! ```
+//! use autocodec::{Codec, CodecError};
+//!
+//! mod le_u16 {
+//!     use autocodec::CodecError;
+//!     pub fn decode(input: &[u8]) -> Result<(u16, &[u8]), CodecError> {
+//!         if input.len() < 2 {
+//!             return Err(CodecError::NotEnoughBytes { needed: 2, available: input.len() });
+//!         }
+//!         Ok((u16::from_le_bytes([input[0], input[1]]), &input[2..]))
+//!     }
+//!     pub fn encode(val: &u16, buf: &mut Vec<u8>) {
+//!         buf.extend_from_slice(&val.to_le_bytes());
+//!     }
+//! }
+//!
+//! #[derive(Debug, PartialEq, Codec)]
+//! struct Custom {
+//!     #[codec(with = "le_u16")]
+//!     value: u16,
+//! }
+//! ```
+//!
+//! ## Zero-Copy Parsing
+//!
+//! ```
+//! use autocodec::Bytes;
+//!
+//! let data = [0, 0, 0, 3, 0xAA, 0xBB, 0xCC, 0xFF];
+//! let (bytes, rest) = Bytes::decode(&data).unwrap();
+//! assert_eq!(&*bytes, &[0xAA, 0xBB, 0xCC]);
+//! assert_eq!(rest, &[0xFF]);
+//! // `bytes` borrows directly from `data` — no allocation
+//! ```
+//!
+//! ## Error Context
+//!
+//! Decode errors include the field name:
+//!
+//! ```
+//! use autocodec::{Codec, CodecError};
+//!
+//! #[derive(Debug, Codec)]
+//! struct Msg { version: u16, length: u32 }
+//!
+//! let err = Msg::decode(&[0, 1]).unwrap_err(); // version ok, length fails
+//! assert_eq!(err.to_string(), "in field `length`: not enough bytes: needed 4, have 0");
 //! ```
 //!
 //! ## Supported Types
 //!
 //! | Type | Wire format |
 //! |------|-------------|
-//! | `u8`, `i8` | 1 byte |
-//! | `u16`, `i16` | 2 bytes, big-endian |
-//! | `u32`, `i32` | 4 bytes, big-endian |
-//! | `u64`, `i64` | 8 bytes, big-endian |
-//! | `f32` | 4 bytes, IEEE 754, big-endian |
-//! | `f64` | 8 bytes, IEEE 754, big-endian |
+//! | `u8`–`u128`, `i8`–`i128` | N bytes, big-endian |
+//! | `f32`, `f64` | IEEE 754, big-endian |
 //! | `bool` | 1 byte (0 = false, nonzero = true) |
 //! | `String` | u32 length prefix + UTF-8 bytes |
 //! | `Vec<T>` | u32 length prefix + N encoded elements |
@@ -108,6 +300,7 @@
 //! | `Box<T>` | transparent (same as T) |
 //! | `(A, B, ...)` | sequential fields (up to 8 elements) |
 //! | `HashMap<K, V>` | u32 length prefix + key-value pairs |
+//! | `Bytes<'a>` | u32 length prefix + bytes (zero-copy) |
 
 pub use autocodec_derive::Codec;
 
