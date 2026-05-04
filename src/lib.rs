@@ -145,6 +145,8 @@ pub enum CodecError {
     TrailingBytes { count: usize },
     /// A length prefix would require an unreasonably large allocation.
     AllocationTooLarge { requested: usize },
+    /// An error occurred while decoding a specific field.
+    FieldError { field: &'static str, source: Box<CodecError> },
 }
 
 /// Maximum number of elements allowed in a single Vec/String decode.
@@ -174,6 +176,9 @@ impl core::fmt::Display for CodecError {
             }
             Self::AllocationTooLarge { requested } => {
                 write!(f, "allocation too large: {requested} elements requested")
+            }
+            Self::FieldError { field, source } => {
+                write!(f, "in field `{field}`: {source}")
             }
         }
     }
@@ -214,6 +219,14 @@ pub trait Codec: Sized {
     /// Encode this value by appending bytes to `buf`.
     fn encode(&self, buf: &mut Vec<u8>);
 
+    /// Calculate the encoded size in bytes without actually encoding.
+    /// Override for efficiency; the default allocates a temporary buffer.
+    fn encoded_size(&self) -> usize {
+        let mut buf = Vec::new();
+        self.encode(&mut buf);
+        buf.len()
+    }
+
     /// Decode a value, returning an error if there are leftover bytes.
     fn decode_exact(input: &[u8]) -> Result<Self, CodecError> {
         let (val, rest) = Self::decode(input)?;
@@ -222,22 +235,21 @@ pub trait Codec: Sized {
         }
         Ok(val)
     }
-
-    /// Calculate the encoded size in bytes without actually encoding.
-    fn encoded_size(&self) -> usize {
-        let mut buf = Vec::new();
-        self.encode(&mut buf);
-        buf.len()
-    }
 }
 
+#[doc(hidden)]
 #[inline]
-fn check(input: &[u8], n: usize) -> Result<(), CodecError> {
+pub fn check_len(input: &[u8], n: usize) -> Result<(), CodecError> {
     if input.len() < n {
         Err(CodecError::NotEnoughBytes { needed: n, available: input.len() })
     } else {
         Ok(())
     }
+}
+
+#[inline]
+fn check(input: &[u8], n: usize) -> Result<(), CodecError> {
+    check_len(input, n)
 }
 
 // --- Integer impls ---
@@ -256,6 +268,8 @@ macro_rules! impl_int {
             fn encode(&self, buf: &mut Vec<u8>) {
                 buf.extend_from_slice(&self.to_be_bytes());
             }
+            #[inline]
+            fn encoded_size(&self) -> usize { core::mem::size_of::<$t>() }
         }
     )*};
 }
@@ -275,6 +289,8 @@ impl Codec for f32 {
     fn encode(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&self.to_be_bytes());
     }
+    #[inline]
+    fn encoded_size(&self) -> usize { 4 }
 }
 
 impl Codec for f64 {
@@ -288,6 +304,8 @@ impl Codec for f64 {
     fn encode(&self, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&self.to_be_bytes());
     }
+    #[inline]
+    fn encoded_size(&self) -> usize { 8 }
 }
 
 // --- Endian traits ---
@@ -394,7 +412,7 @@ impl<T: Codec> CodecWithLen for Vec<T> {
         if count > MAX_DECODE_LEN {
             return Err(CodecError::AllocationTooLarge { requested: count });
         }
-        let mut vec = Vec::with_capacity(count);
+        let mut vec = Vec::with_capacity(count.min(rest.len()));
         for _ in 0..count {
             let (item, remaining) = T::decode(rest)?;
             vec.push(item);
@@ -466,6 +484,13 @@ pub fn check_max_len<T: HasLen>(val: &T, max: usize) -> Result<(), CodecError> {
     if actual > max { Err(CodecError::TooLong { max, actual }) } else { Ok(()) }
 }
 
+/// Wrap an error with field context.
+#[doc(hidden)]
+#[inline]
+pub fn field_err(field: &'static str, e: CodecError) -> CodecError {
+    CodecError::FieldError { field, source: Box::new(e) }
+}
+
 // --- Skip helper ---
 
 #[doc(hidden)]
@@ -517,6 +542,55 @@ pub fn decode_magic_u64(input: &[u8], expected: u64) -> Result<&[u8], CodecError
     Ok(rest)
 }
 
+// --- Bitfield helpers ---
+
+/// Extract `bits` bits starting at `bit_offset` from a byte slice (MSB-first).
+#[doc(hidden)]
+#[inline]
+pub fn extract_bits(bytes: &[u8], bit_offset: usize, bits: usize) -> u64 {
+    // Read enough bytes into a u64, then shift/mask
+    let byte_start = bit_offset / 8;
+    let byte_end = (bit_offset + bits).div_ceil(8);
+    let n = byte_end - byte_start;
+
+    let mut raw: u64 = 0;
+    for i in 0..n {
+        raw = (raw << 8) | bytes[byte_start + i] as u64;
+    }
+
+    // The bits we want are at position (n*8 - (bit_offset%8) - bits) from the right
+    let shift = n * 8 - (bit_offset % 8) - bits;
+    let mask = (1u64 << bits) - 1;
+    (raw >> shift) & mask
+}
+
+/// Set `bits` bits starting at `bit_offset` in a byte slice (MSB-first).
+#[doc(hidden)]
+#[inline]
+pub fn set_bits(bytes: &mut [u8], bit_offset: usize, bits: usize, val: u64) {
+    let byte_start = bit_offset / 8;
+    let byte_end = (bit_offset + bits).div_ceil(8);
+    let n = byte_end - byte_start;
+
+    // Read current bytes into a u64
+    let mut raw: u64 = 0;
+    for i in 0..n {
+        raw = (raw << 8) | bytes[byte_start + i] as u64;
+    }
+
+    // Set the bits
+    let shift = n * 8 - (bit_offset % 8) - bits;
+    let mask = (1u64 << bits) - 1;
+    raw &= !(mask << shift);
+    raw |= (val & mask) << shift;
+
+    // Write back
+    for i in (0..n).rev() {
+        bytes[byte_start + i] = (raw & 0xFF) as u8;
+        raw >>= 8;
+    }
+}
+
 // --- Standard type impls ---
 
 impl Codec for bool {
@@ -529,6 +603,8 @@ impl Codec for bool {
     fn encode(&self, buf: &mut Vec<u8>) {
         buf.push(if *self { 1 } else { 0 });
     }
+    #[inline]
+    fn encoded_size(&self) -> usize { 1 }
 }
 
 impl<T: Codec> Codec for Vec<T> {
@@ -538,7 +614,7 @@ impl<T: Codec> Codec for Vec<T> {
         if count > MAX_DECODE_LEN {
             return Err(CodecError::AllocationTooLarge { requested: count });
         }
-        let mut vec = Vec::with_capacity(count);
+        let mut vec = Vec::with_capacity(count.min(rest.len()));
         for _ in 0..count {
             let (item, remaining) = T::decode(rest)?;
             vec.push(item);
@@ -550,6 +626,9 @@ impl<T: Codec> Codec for Vec<T> {
         (self.len() as u32).encode(buf);
         for item in self { item.encode(buf); }
     }
+    fn encoded_size(&self) -> usize {
+        4 + self.iter().map(|i| i.encoded_size()).sum::<usize>()
+    }
 }
 
 impl Codec for String {
@@ -560,13 +639,14 @@ impl Codec for String {
             return Err(CodecError::AllocationTooLarge { requested: n });
         }
         check(rest, n)?;
-        let s = std::str::from_utf8(&rest[..n]).map_err(|_| CodecError::InvalidUtf8)?.to_owned();
+        let s = String::from_utf8(rest[..n].to_vec()).map_err(|_| CodecError::InvalidUtf8)?;
         Ok((s, &rest[n..]))
     }
     fn encode(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode(buf);
         buf.extend_from_slice(self.as_bytes());
     }
+    fn encoded_size(&self) -> usize { 4 + self.len() }
 }
 
 impl<T: Codec> Codec for Option<T> {
@@ -583,6 +663,9 @@ impl<T: Codec> Codec for Option<T> {
             Some(val) => { 1u8.encode(buf); val.encode(buf); }
         }
     }
+    fn encoded_size(&self) -> usize {
+        1 + match self { None => 0, Some(val) => val.encoded_size() }
+    }
 }
 
 impl<T: Codec> Codec for Box<T> {
@@ -595,6 +678,8 @@ impl<T: Codec> Codec for Box<T> {
     fn encode(&self, buf: &mut Vec<u8>) {
         (**self).encode(buf);
     }
+    #[inline]
+    fn encoded_size(&self) -> usize { (**self).encoded_size() }
 }
 
 impl<K: Codec + Eq + Hash, V: Codec> Codec for HashMap<K, V> {
@@ -613,25 +698,31 @@ impl<K: Codec + Eq + Hash, V: Codec> Codec for HashMap<K, V> {
         (self.len() as u32).encode(buf);
         for (k, v) in self { k.encode(buf); v.encode(buf); }
     }
+    fn encoded_size(&self) -> usize {
+        4 + self.iter().map(|(k, v)| k.encoded_size() + v.encoded_size()).sum::<usize>()
+    }
 }
 
 impl<T: Codec, const N: usize> Codec for [T; N] {
     fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
         let mut rest = input;
-        let mut arr: [core::mem::MaybeUninit<T>; N] =
-            unsafe { core::mem::MaybeUninit::uninit().assume_init() };
-        for item in arr.iter_mut() {
+        let mut vec = Vec::with_capacity(N);
+        for _ in 0..N {
             let (val, remaining) = T::decode(rest)?;
-            item.write(val);
+            vec.push(val);
             rest = remaining;
         }
-        let result = unsafe { core::ptr::read(&arr as *const _ as *const [T; N]) };
-        #[allow(clippy::forget_non_drop)]
-        core::mem::forget(arr);
-        Ok((result, rest))
+        let arr: [T; N] = match vec.try_into() {
+            Ok(a) => a,
+            Err(_) => unreachable!(),
+        };
+        Ok((arr, rest))
     }
     fn encode(&self, buf: &mut Vec<u8>) {
         for item in self { item.encode(buf); }
+    }
+    fn encoded_size(&self) -> usize {
+        self.iter().map(|i| i.encoded_size()).sum()
     }
 }
 
@@ -647,6 +738,9 @@ macro_rules! impl_tuple {
             }
             fn encode(&self, buf: &mut Vec<u8>) {
                 $(self.$idx.encode(buf);)+
+            }
+            fn encoded_size(&self) -> usize {
+                0 $(+ self.$idx.encoded_size())+
             }
         }
     };

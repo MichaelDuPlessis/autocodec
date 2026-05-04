@@ -319,7 +319,11 @@ fn min_len_rejects_empty() {
     let val = NonEmpty { items: vec![] };
     let mut buf = Vec::new();
     val.encode(&mut buf);
-    assert_eq!(NonEmpty::decode(&buf), Err(CodecError::TooShort { min: 1, actual: 0 }));
+    let err = NonEmpty::decode(&buf).unwrap_err();
+    assert_eq!(err, CodecError::FieldError {
+        field: "items",
+        source: Box::new(CodecError::TooShort { min: 1, actual: 0 }),
+    });
 }
 
 #[test]
@@ -336,7 +340,11 @@ fn max_len_rejects_too_long() {
     let val = Bounded { items: vec![1, 2, 3, 4] };
     let mut buf = Vec::new();
     val.encode(&mut buf);
-    assert_eq!(Bounded::decode(&buf), Err(CodecError::TooLong { max: 3, actual: 4 }));
+    let err = Bounded::decode(&buf).unwrap_err();
+    assert_eq!(err, CodecError::FieldError {
+        field: "items",
+        source: Box::new(CodecError::TooLong { max: 3, actual: 4 }),
+    });
 }
 
 #[test]
@@ -379,8 +387,11 @@ fn magic_field() {
 #[test]
 fn magic_field_rejects_wrong_value() {
     let buf = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-    let result = WithMagic::decode(&buf);
-    assert_eq!(result, Err(CodecError::BadMagic));
+    let err = WithMagic::decode(&buf).unwrap_err();
+    assert_eq!(err, CodecError::FieldError {
+        field: "_magic",
+        source: Box::new(CodecError::BadMagic),
+    });
 }
 
 #[test]
@@ -397,7 +408,11 @@ fn validate_rejects_invalid() {
     let val = Validated { value: 3 };
     let mut buf = Vec::new();
     val.encode(&mut buf);
-    assert_eq!(Validated::decode(&buf), Err(CodecError::ValidationFailed));
+    let err = Validated::decode(&buf).unwrap_err();
+    assert_eq!(err, CodecError::FieldError {
+        field: "value",
+        source: Box::new(CodecError::ValidationFailed),
+    });
 }
 
 #[test]
@@ -487,7 +502,11 @@ fn roundtrip_hashmap() {
 
 #[test]
 fn error_not_enough_bytes() {
-    assert_eq!(Header::decode(&[0x00]), Err(CodecError::NotEnoughBytes { needed: 2, available: 1 }));
+    let err = Header::decode(&[0x00]).unwrap_err();
+    assert_eq!(err, CodecError::FieldError {
+        field: "version",
+        source: Box::new(CodecError::NotEnoughBytes { needed: 2, available: 1 }),
+    });
 }
 
 #[test]
@@ -622,4 +641,68 @@ fn skip_with_custom_default() {
     let (decoded, _) = WithDefault::decode(&buf).unwrap();
     assert_eq!(decoded.id, 1);
     assert_eq!(decoded.answer, 42); // custom default, not 0
+}
+
+// --- Bitfields ---
+
+#[derive(Debug, PartialEq, Codec)]
+struct Flags {
+    #[codec(bits = 1)]
+    syn: u8,
+    #[codec(bits = 1)]
+    ack: u8,
+    #[codec(bits = 1)]
+    fin: u8,
+    #[codec(bits = 5)]
+    reserved: u8,
+    // total: 8 bits = 1 byte
+}
+
+#[derive(Debug, PartialEq, Codec)]
+struct TcpFlags {
+    #[codec(bits = 4)]
+    version: u8,
+    #[codec(bits = 4)]
+    ihl: u8,
+    #[codec(bits = 8)]
+    dscp: u8,
+    // total: 16 bits = 2 bytes
+}
+
+#[test]
+fn bitfield_roundtrip() {
+    let val = Flags { syn: 1, ack: 0, fin: 1, reserved: 0b10101 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    assert_eq!(buf.len(), 1);
+    // syn=1, ack=0, fin=1, reserved=10101 -> 1 0 1 10101 = 0b10110101 = 0xB5
+    assert_eq!(buf[0], 0b10110101);
+    let (decoded, rest) = Flags::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn bitfield_two_bytes() {
+    let val = TcpFlags { version: 4, ihl: 5, dscp: 0xFF };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    assert_eq!(buf.len(), 2);
+    // version=0100, ihl=0101 -> byte 0 = 0b01000101 = 0x45
+    // dscp=11111111 -> byte 1 = 0xFF
+    assert_eq!(buf[0], 0x45);
+    assert_eq!(buf[1], 0xFF);
+    let (decoded, _) = TcpFlags::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+}
+
+// --- Error context ---
+
+#[test]
+fn error_context_shows_field_name() {
+    let err = Header::decode(&[0x00, 0x01]).unwrap_err(); // version ok (2 bytes), length fails
+    match err {
+        CodecError::FieldError { field, .. } => assert_eq!(field, "length"),
+        other => panic!("expected FieldError, got {other:?}"),
+    }
 }

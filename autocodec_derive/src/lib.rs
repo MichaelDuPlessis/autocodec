@@ -73,6 +73,7 @@ struct FieldAttrs {
     validate: Option<String>,
     with_module: Option<String>,
     default_expr: Option<String>,
+    bits: Option<usize>,
 }
 
 fn parse_container_attrs(input: &DeriveInput) -> ContainerAttrs {
@@ -109,7 +110,7 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
     let mut attrs = FieldAttrs {
         endian: None, len: None, min_len: None, max_len: None,
         skip: false, padding: None, magic: None, validate: None,
-        with_module: None, default_expr: None,
+        with_module: None, default_expr: None, bits: None,
     };
     for attr in &field.attrs {
         if !attr.path().is_ident("codec") { continue; }
@@ -177,6 +178,11 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
                         && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
                     {
                         attrs.default_expr = Some(s.value());
+                    }
+                    if nv.path.is_ident("bits")
+                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                    {
+                        attrs.bits = i.base10_parse().ok();
                     }
                 }
                 _ => {}
@@ -348,6 +354,159 @@ fn encode_field_stmt(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs, c
 
 // --- Struct impl ---
 
+/// Generate decode statements for named fields, handling bitfield groups and error context.
+fn gen_decode_stmts_named(
+    field_names: &[&syn::Ident],
+    field_types: &[&syn::Type],
+    attrs: &[FieldAttrs],
+    container: &ContainerAttrs,
+) -> proc_macro2::TokenStream {
+    let mut stmts = proc_macro2::TokenStream::new();
+    let mut i = 0;
+    while i < field_names.len() {
+        if let Some(bits) = attrs[i].bits {
+            // Collect consecutive bitfield group
+            let group_start = i;
+            let mut total_bits = bits;
+            i += 1;
+            while i < field_names.len() && attrs[i].bits.is_some() {
+                total_bits += attrs[i].bits.unwrap();
+                i += 1;
+            }
+            let total_bytes = total_bits.div_ceil(8);
+            let total_bytes_lit = syn::LitInt::new(&format!("{total_bytes}"), proc_macro2::Span::call_site());
+
+            stmts.extend(quote! {
+                autocodec::check_len(input, #total_bytes_lit)?;
+                let __bitfield_bytes = &input[..#total_bytes_lit];
+                let input = &input[#total_bytes_lit..];
+            });
+
+            let mut bit_offset = 0usize;
+            for j in group_start..i {
+                let n = field_names[j];
+                let t = field_types[j];
+                let b = attrs[j].bits.unwrap();
+                let offset_lit = syn::LitInt::new(&format!("{bit_offset}"), proc_macro2::Span::call_site());
+                let bits_lit = syn::LitInt::new(&format!("{b}"), proc_macro2::Span::call_site());
+                stmts.extend(quote! {
+                    let #n = autocodec::extract_bits(__bitfield_bytes, #offset_lit, #bits_lit) as #t;
+                });
+                bit_offset += b;
+            }
+        } else {
+            let n = field_names[i];
+            let t = field_types[i];
+            let a = &attrs[i];
+            let name_str = n.to_string();
+            let inner = decode_stmt(quote! { #n }, t, a, container);
+            // Wrap with field error context using a block that maps errors
+            stmts.extend(quote! {
+                let __before = input;
+                let __decode_result: Result<_, autocodec::CodecError> = (|| {
+                    #inner
+                    Ok((#n, input))
+                })();
+                let (#n, input) = __decode_result.map_err(|e| autocodec::field_err(#name_str, e))?;
+            });
+            i += 1;
+        }
+    }
+    stmts
+}
+
+/// Generate encode statements for named fields, handling bitfield groups.
+fn gen_encode_stmts_named(
+    field_names: &[&syn::Ident],
+    attrs: &[FieldAttrs],
+    container: &ContainerAttrs,
+) -> proc_macro2::TokenStream {
+    let mut stmts = proc_macro2::TokenStream::new();
+    let mut i = 0;
+    while i < field_names.len() {
+        if let Some(bits) = attrs[i].bits {
+            // Collect consecutive bitfield group
+            let group_start = i;
+            let mut total_bits = bits;
+            i += 1;
+            while i < field_names.len() && attrs[i].bits.is_some() {
+                total_bits += attrs[i].bits.unwrap();
+                i += 1;
+            }
+            let total_bytes = total_bits.div_ceil(8);
+            let total_bytes_lit = syn::LitInt::new(&format!("{total_bytes}"), proc_macro2::Span::call_site());
+
+            stmts.extend(quote! {
+                let mut __bitfield_buf = [0u8; #total_bytes_lit];
+            });
+
+            let mut bit_offset = 0usize;
+            for j in group_start..i {
+                let n = field_names[j];
+                let b = attrs[j].bits.unwrap();
+                let offset_lit = syn::LitInt::new(&format!("{bit_offset}"), proc_macro2::Span::call_site());
+                let bits_lit = syn::LitInt::new(&format!("{b}"), proc_macro2::Span::call_site());
+                stmts.extend(quote! {
+                    autocodec::set_bits(&mut __bitfield_buf, #offset_lit, #bits_lit, self.#n as u64);
+                });
+                bit_offset += b;
+            }
+
+            stmts.extend(quote! {
+                buf.extend_from_slice(&__bitfield_buf);
+            });
+        } else {
+            let n = field_names[i];
+            let a = &attrs[i];
+            stmts.extend(encode_field_stmt(quote! { self.#n }, a, container, false));
+            i += 1;
+        }
+    }
+    stmts
+}
+
+/// Generate encoded_size calculation for named fields.
+fn gen_size_stmts_named(
+    field_names: &[&syn::Ident],
+    attrs: &[FieldAttrs],
+) -> proc_macro2::TokenStream {
+    let mut parts: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut i = 0;
+    while i < field_names.len() {
+        if let Some(bits) = attrs[i].bits {
+            let mut total_bits = bits;
+            i += 1;
+            while i < field_names.len() && attrs[i].bits.is_some() {
+                total_bits += attrs[i].bits.unwrap();
+                i += 1;
+            }
+            let total_bytes = total_bits.div_ceil(8);
+            let lit = syn::LitInt::new(&format!("{total_bytes}"), proc_macro2::Span::call_site());
+            parts.push(quote! { #lit });
+        } else {
+            let a = &attrs[i];
+            let n = field_names[i];
+            if a.skip {
+                // skip fields contribute 0
+            } else if a.magic.is_some() {
+                parts.push(quote! { 4usize }); // magic is always u32
+            } else {
+                parts.push(quote! { autocodec::Codec::encoded_size(&self.#n) });
+            }
+            if let Some(pad) = a.padding {
+                let lit = syn::LitInt::new(&format!("{pad}"), proc_macro2::Span::call_site());
+                parts.push(quote! { #lit });
+            }
+            i += 1;
+        }
+    }
+    if parts.is_empty() {
+        quote! { 0 }
+    } else {
+        quote! { #(#parts)+* }
+    }
+}
+
 fn impl_struct(
     name: &syn::Ident,
     impl_generics: &syn::ImplGenerics,
@@ -362,22 +521,23 @@ fn impl_struct(
             let field_types: Vec<_> = f.named.iter().map(|f| &f.ty).collect();
             let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
 
-            let decode_stmts = field_names.iter().zip(field_types.iter()).zip(attrs.iter()).map(|((n, t), a)| {
-                decode_stmt(quote! { #n }, t, a, container)
-            });
-            let encode_stmts = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
-                encode_field_stmt(quote! { self.#n }, a, container, false)
-            });
+            let decode_stmts = gen_decode_stmts_named(&field_names, &field_types, &attrs, container);
+            let encode_stmts = gen_encode_stmts_named(&field_names, &attrs, container);
+            let size_stmts = gen_size_stmts_named(&field_names, &attrs);
             let construct = quote! { Self { #(#field_names),* } };
 
             quote! {
                 impl #impl_generics autocodec::Codec for #name #ty_generics #where_clause {
                     fn decode(input: &[u8]) -> Result<(Self, &[u8]), autocodec::CodecError> {
-                        #(#decode_stmts)*
+                        #decode_stmts
                         Ok((#construct, input))
                     }
                     fn encode(&self, buf: &mut Vec<u8>) {
-                        #(#encode_stmts)*
+                        buf.reserve(self.encoded_size());
+                        #encode_stmts
+                    }
+                    fn encoded_size(&self) -> usize {
+                        #size_stmts
                     }
                 }
             }
