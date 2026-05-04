@@ -298,6 +298,7 @@
 //! | `Option<T>` | u8 tag (0 = None, 1 = Some) + value |
 //! | `[T; N]` | N encoded elements (no length prefix) |
 //! | `Box<T>` | transparent (same as T) |
+//! | `Box<[T]>` | u32 length prefix + N elements (same as Vec) |
 //! | `(A, B, ...)` | sequential fields (up to 8 elements) |
 //! | `HashMap<K, V>` | u32 length prefix + key-value pairs |
 //! | `Bytes<'a>` | u32 length prefix + bytes (zero-copy) |

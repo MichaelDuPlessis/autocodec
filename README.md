@@ -64,6 +64,7 @@ assert_eq!(header.encoded_size(), 6);
 | `Option<T>` | u8 tag + value |
 | `[T; N]` | N elements (no prefix) |
 | `Box<T>` | transparent |
+| `Box<[T]>` | u32 length + elements (like Vec) |
 | `(A, B, ...)` | sequential (up to 8) |
 | `HashMap<K, V>` | u32 length + pairs |
 | `Bytes<'a>` | u32 length + bytes (zero-copy) |
