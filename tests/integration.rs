@@ -886,3 +886,61 @@ fn empty_struct_with_padding() {
     assert_eq!(decoded._reserved, 0);
     assert_eq!(rest, &[0xFF]);
 }
+
+// --- Box<[T]> ---
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithBoxedSlice {
+    data: Box<[u8]>,
+}
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithBoxedSliceShortLen {
+    #[codec(len = "u8")]
+    data: Box<[u16]>,
+}
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithBoxedSliceMinLen {
+    #[codec(min_len = 2)]
+    data: Box<[u8]>,
+}
+
+#[test]
+fn boxed_slice_roundtrip() {
+    let val = WithBoxedSlice { data: vec![1, 2, 3].into_boxed_slice() };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    // u32 len (4) + 3 bytes = 7
+    assert_eq!(buf.len(), 7);
+    let (decoded, rest) = WithBoxedSlice::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn boxed_slice_custom_len() {
+    let val = WithBoxedSliceShortLen { data: vec![1, 2].into_boxed_slice() };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    // u8 len (1) + 2 * u16 (4) = 5
+    assert_eq!(buf.len(), 5);
+    assert_eq!(buf[0], 2); // u8 length prefix
+    let (decoded, _) = WithBoxedSliceShortLen::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+}
+
+#[test]
+fn boxed_slice_min_len_rejects() {
+    let val = WithBoxedSliceMinLen { data: vec![1].into_boxed_slice() };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    let err = WithBoxedSliceMinLen::decode(&buf).unwrap_err();
+    match err {
+        CodecError::FieldError { field, source } => {
+            assert_eq!(field, "data");
+            assert_eq!(*source, CodecError::TooShort { min: 2, actual: 1 });
+        }
+        other => panic!("expected FieldError, got {other:?}"),
+    }
+}

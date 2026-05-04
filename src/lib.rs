@@ -636,6 +636,17 @@ impl CodecWithLen for String {
     }
 }
 
+impl<T: Codec> CodecWithLen for Box<[T]> {
+    fn decode_with_len<L: LenPrefix>(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        let (vec, rest) = <Vec<T> as CodecWithLen>::decode_with_len::<L>(input)?;
+        Ok((vec.into_boxed_slice(), rest))
+    }
+    fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
+        L::from_usize(self.len()).encode(buf);
+        for item in self.iter() { item.encode(buf); }
+    }
+}
+
 #[doc(hidden)]
 #[inline]
 pub fn decode_with_len<L: LenPrefix, T: CodecWithLen>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
@@ -660,6 +671,10 @@ impl<T> HasLen for Vec<T> {
 }
 
 impl HasLen for String {
+    #[inline] fn codec_len(&self) -> usize { self.len() }
+}
+
+impl<T> HasLen for Box<[T]> {
     #[inline] fn codec_len(&self) -> usize { self.len() }
 }
 
@@ -873,6 +888,20 @@ impl<T: Codec> Codec for Box<T> {
     }
     #[inline]
     fn encoded_size(&self) -> usize { (**self).encoded_size() }
+}
+
+impl<T: Codec> Codec for Box<[T]> {
+    fn decode(input: &[u8]) -> Result<(Self, &[u8]), CodecError> {
+        let (vec, rest) = Vec::<T>::decode(input)?;
+        Ok((vec.into_boxed_slice(), rest))
+    }
+    fn encode(&self, buf: &mut Vec<u8>) {
+        (self.len() as u32).encode(buf);
+        for item in self.iter() { item.encode(buf); }
+    }
+    fn encoded_size(&self) -> usize {
+        4 + self.iter().map(|i| i.encoded_size()).sum::<usize>()
+    }
 }
 
 impl<K: Codec + Eq + Hash, V: Codec> Codec for HashMap<K, V> {
