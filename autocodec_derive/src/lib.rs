@@ -285,12 +285,18 @@ fn decode_stmt(binding: proc_macro2::TokenStream, ty: &syn::Type, attrs: &FieldA
         };
     }
 
-    // Trailing field: decode only if bytes remain, otherwise use Default
+    // Trailing field: decode only if bytes remain, otherwise use default
     if attrs.trailing {
         let expr = decode_expr(ty, attrs, container);
+        let default_expr = if let Some(ref expr_str) = attrs.default_expr {
+            let parsed: syn::Expr = syn::parse_str(expr_str).expect("invalid default expression");
+            quote! { #parsed }
+        } else {
+            quote! { <#ty as Default>::default() }
+        };
         return quote! {
             let (#binding, input) = if input.is_empty() {
-                (<#ty as Default>::default(), input)
+                (#default_expr, input)
             } else {
                 #expr
             };

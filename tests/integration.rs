@@ -1007,3 +1007,31 @@ fn trailing_multiple_both_absent() {
     assert_eq!(decoded.b, u8::default());
     assert!(rest.is_empty());
 }
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithTrailingDefault {
+    id: u32,
+    #[codec(trailing, default = "99")]
+    value: u8,
+}
+
+#[test]
+fn trailing_with_custom_default() {
+    // Encode only the id (no trailing value)
+    let mut buf = Vec::new();
+    42u32.encode(&mut buf);
+    let (decoded, rest) = WithTrailingDefault::decode(&buf).unwrap();
+    assert_eq!(decoded.id, 42);
+    assert_eq!(decoded.value, 99); // custom default, not 0
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn trailing_with_custom_default_present() {
+    let val = WithTrailingDefault { id: 42, value: 7 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    let (decoded, rest) = WithTrailingDefault::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}
