@@ -944,3 +944,66 @@ fn boxed_slice_min_len_rejects() {
         other => panic!("expected FieldError, got {other:?}"),
     }
 }
+
+// --- trailing fields ---
+
+/// `trailing` can only be applied to the last field(s) in a struct.
+/// Fields after a trailing field must also be trailing.
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithTrailing {
+    id: u32,
+    #[codec(trailing)]
+    label: String,
+}
+
+#[derive(Debug, PartialEq, Codec)]
+struct WithMultiTrailing {
+    id: u32,
+    #[codec(trailing)]
+    a: u8,
+    #[codec(trailing)]
+    b: u8,
+}
+
+#[test]
+fn trailing_roundtrip_with_data() {
+    let val = WithTrailing { id: 42, label: "hello".to_string() };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    let (decoded, rest) = WithTrailing::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn trailing_decode_absent_uses_default() {
+    // Encode only the id (no trailing label)
+    let mut buf = Vec::new();
+    42u32.encode(&mut buf);
+    let (decoded, rest) = WithTrailing::decode(&buf).unwrap();
+    assert_eq!(decoded.id, 42);
+    assert_eq!(decoded.label, String::default());
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn trailing_multiple_both_present() {
+    let val = WithMultiTrailing { id: 7, a: 1, b: 2 };
+    let mut buf = Vec::new();
+    val.encode(&mut buf);
+    let (decoded, rest) = WithMultiTrailing::decode(&buf).unwrap();
+    assert_eq!(decoded, val);
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn trailing_multiple_both_absent() {
+    let mut buf = Vec::new();
+    7u32.encode(&mut buf);
+    let (decoded, rest) = WithMultiTrailing::decode(&buf).unwrap();
+    assert_eq!(decoded.id, 7);
+    assert_eq!(decoded.a, u8::default());
+    assert_eq!(decoded.b, u8::default());
+    assert!(rest.is_empty());
+}

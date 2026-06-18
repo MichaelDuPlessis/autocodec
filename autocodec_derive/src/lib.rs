@@ -68,6 +68,7 @@ struct FieldAttrs {
     min_len: Option<usize>,
     max_len: Option<usize>,
     skip: bool,
+    trailing: bool,
     padding: Option<usize>,
     magic: Option<u64>,
     validate: Option<String>,
@@ -117,7 +118,7 @@ fn parse_container_attrs(input: &DeriveInput) -> ContainerAttrs {
 fn parse_field_attrs(field: &Field) -> FieldAttrs {
     let mut attrs = FieldAttrs {
         endian: None, len: None, min_len: None, max_len: None,
-        skip: false, padding: None, magic: None, validate: None,
+        skip: false, trailing: false, padding: None, magic: None, validate: None,
         with_module: None, default_expr: None, bits: None,
     };
     for attr in &field.attrs {
@@ -130,6 +131,9 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
             match meta {
                 Meta::Path(p) if p.is_ident("skip") => {
                     attrs.skip = true;
+                }
+                Meta::Path(p) if p.is_ident("trailing") => {
+                    attrs.trailing = true;
                 }
                 Meta::NameValue(nv) => {
                     if nv.path.is_ident("endian")
@@ -278,6 +282,18 @@ fn decode_stmt(binding: proc_macro2::TokenStream, ty: &syn::Type, attrs: &FieldA
         return quote! {
             let input = autocodec::decode_magic_u32(input, #magic_lit as u32)?;
             let #binding = <#ty as Default>::default();
+        };
+    }
+
+    // Trailing field: decode only if bytes remain, otherwise use Default
+    if attrs.trailing {
+        let expr = decode_expr(ty, attrs, container);
+        return quote! {
+            let (#binding, input) = if input.is_empty() {
+                (<#ty as Default>::default(), input)
+            } else {
+                #expr
+            };
         };
     }
 
