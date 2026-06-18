@@ -10,6 +10,7 @@ A Rust derive macro for automatic binary protocol serialization and deserializat
 - Custom enum discriminants via `#[repr(u8)]` + native `= N` syntax
 - Bitfield packing with `#[codec(bits = N)]`
 - Field validation, padding, magic constants, skip with custom defaults
+- Trailing fields for optional protocol extensions
 - Custom codec delegation via `#[codec(with = "module")]`
 - Zero-copy parsing with `Bytes<'a>`
 - Allocation guards against malicious inputs (16 MiB limit)
@@ -109,6 +110,8 @@ Or use `#[codec(discriminant = N)]` on individual variants.
 #[codec(validate = "is_valid")]          // fn(&T) -> bool, error if false
 #[codec(with = "my_module")]             // custom encode/decode functions
 #[codec(bits = 4)]                       // bitfield: pack into N bits
+#[codec(trailing)]                       // decode only if bytes remain, else Default
+#[codec(trailing, default = "expr")]     // decode only if bytes remain, else custom default
 ```
 
 ## Bitfields
@@ -131,6 +134,21 @@ struct TcpFlags {
     // Total: 16 bits = 2 bytes on the wire
 }
 ```
+
+## Trailing Fields
+
+Fields marked with `#[codec(trailing)]` are only decoded if there are remaining bytes in the input. If the input is exhausted, the field gets `Default::default()` (or a custom default). This is useful for protocol extensions where new fields are added but older messages may not include them.
+
+```rust
+#[derive(Codec, Default)]
+struct GetRequest {
+    key: Key,
+    #[codec(trailing, len = "u8")]
+    params: Vec<Param>,  // absent in older protocol versions
+}
+```
+
+Trailing fields must be the last field(s) in a struct. On encode, they are always written normally.
 
 ## Zero-Copy Parsing
 

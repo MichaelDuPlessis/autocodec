@@ -20,6 +20,8 @@ use syn::{Data, DeriveInput, Expr, ExprLit, Field, Fields, Lit, Meta, parse_macr
 /// - `#[codec(padding = N)]` — insert N zero bytes after this field
 /// - `#[codec(magic = 0xNN)]` — expect a constant value, error on mismatch
 /// - `#[codec(validate = "fn_name")]` — call a validation function after decode
+/// - `#[codec(trailing)]` — decode only if bytes remain, otherwise use Default
+/// - `#[codec(trailing, default = "expr")]` — decode only if bytes remain, otherwise use custom default
 ///
 /// ## Enum-level
 ///
