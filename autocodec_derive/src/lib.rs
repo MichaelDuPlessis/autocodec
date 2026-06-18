@@ -347,6 +347,50 @@ fn encode_expr(
     }
 }
 
+/// Generate the correct `encoded_size` expression for a field, accounting for custom `len` attrs.
+///
+/// Default `Codec::encoded_size` for `Vec<T>`, `Box<[T]>`, and `String` uses a u32 (4-byte)
+/// length prefix. When `#[codec(len = "...")]` specifies a different prefix type, we adjust:
+///   custom_size = Codec::encoded_size(field) + (custom_prefix_bytes - 4)
+///
+/// `is_ref`: if true, `field_expr` is already a reference (e.g. enum match binding from `&self`),
+/// so we must not add an extra `&`.
+fn size_expr(
+    field_expr: proc_macro2::TokenStream,
+    attrs: &FieldAttrs,
+    is_ref: bool,
+) -> proc_macro2::TokenStream {
+    if attrs.skip {
+        return quote! { 0usize };
+    }
+    if attrs.magic.is_some() {
+        return quote! { 4usize };
+    }
+    let ref_expr = if is_ref {
+        quote! { #field_expr }
+    } else {
+        quote! { &#field_expr }
+    };
+    if let Some(lt) = attrs.len {
+        let adjustment: isize = match lt {
+            LenType::U8 => -3,  // 1 - 4
+            LenType::U16 => -2, // 2 - 4
+            LenType::U32 => 0,  // 4 - 4
+            LenType::U64 => 4,  // 8 - 4
+        };
+        return if adjustment == 0 {
+            quote! { autocodec::Codec::encoded_size(#ref_expr) }
+        } else if adjustment < 0 {
+            let abs_adj = (-adjustment) as usize;
+            quote! { autocodec::Codec::encoded_size(#ref_expr) - #abs_adj }
+        } else {
+            let adj = adjustment as usize;
+            quote! { autocodec::Codec::encoded_size(#ref_expr) + #adj }
+        };
+    }
+    quote! { autocodec::Codec::encoded_size(#ref_expr) }
+}
+
 fn encode_expr_ref(
     field_expr: proc_macro2::TokenStream,
     attrs: &FieldAttrs,
@@ -630,12 +674,9 @@ fn gen_size_stmts_named(
         } else {
             let a = &attrs[i];
             let n = field_names[i];
-            if a.skip {
-                // skip fields contribute 0
-            } else if a.magic.is_some() {
-                parts.push(quote! { 4usize }); // magic is always u32
-            } else {
-                parts.push(quote! { autocodec::Codec::encoded_size(&self.#n) });
+            let expr = size_expr(quote! { self.#n }, a, false);
+            if !a.skip {
+                parts.push(expr);
             }
             if let Some(pad) = a.padding {
                 let lit = syn::LitInt::new(&format!("{pad}"), proc_macro2::Span::call_site());
@@ -720,11 +761,7 @@ fn impl_struct(
                 .zip(attrs.iter())
                 .map(|((i, _), a)| {
                     let idx = syn::Index::from(i);
-                    if a.skip {
-                        quote! { 0usize }
-                    } else {
-                        quote! { autocodec::Codec::encoded_size(&self.#idx) }
-                    }
+                    size_expr(quote! { self.#idx }, a, false)
                 })
                 .collect();
 
@@ -937,11 +974,7 @@ fn impl_enum(
                         f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
                     let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
                     let sizes = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
-                        if a.skip {
-                            quote! { 0usize }
-                        } else {
-                            quote! { autocodec::Codec::encoded_size(#n) }
-                        }
+                        size_expr(quote! { #n }, a, true)
                     });
                     quote! {
                         Self::#vname { #(#field_names),* } => #disc_size_lit #(+ #sizes)*,
@@ -953,11 +986,7 @@ fn impl_enum(
                         .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
                         .collect();
                     let sizes = field_idents.iter().zip(attrs.iter()).map(|(id, a)| {
-                        if a.skip {
-                            quote! { 0usize }
-                        } else {
-                            quote! { autocodec::Codec::encoded_size(#id) }
-                        }
+                        size_expr(quote! { #id }, a, true)
                     });
                     quote! {
                         Self::#vname(#(#field_idents),*) => #disc_size_lit #(+ #sizes)*,
