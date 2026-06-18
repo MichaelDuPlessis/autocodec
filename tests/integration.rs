@@ -182,7 +182,11 @@ struct WithTuple {
 
 #[test]
 fn roundtrip_struct() {
-    let h = Header { version: 1, length: 42, flags: 0xFF };
+    let h = Header {
+        version: 1,
+        length: 42,
+        flags: 0xFF,
+    };
     let mut buf = Vec::new();
     h.encode(&mut buf);
     assert_eq!(buf.len(), 7);
@@ -223,7 +227,10 @@ fn roundtrip_enum_unit() {
 
 #[test]
 fn roundtrip_enum_named() {
-    let msg = Message::Data { id: 99, payload: vec![1, 2, 3] };
+    let msg = Message::Data {
+        id: 99,
+        payload: vec![1, 2, 3],
+    };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
     let (decoded, _) = Message::decode(&buf).unwrap();
@@ -242,7 +249,11 @@ fn roundtrip_enum_tuple() {
 #[test]
 fn roundtrip_nested() {
     let n = Nested {
-        header: Header { version: 2, length: 100, flags: 0x01 },
+        header: Header {
+            version: 2,
+            length: 100,
+            flags: 0x01,
+        },
         name: "hello".to_string(),
     };
     let mut buf = Vec::new();
@@ -253,7 +264,10 @@ fn roundtrip_nested() {
 
 #[test]
 fn roundtrip_option() {
-    let some = WithOptional { id: 7, label: Some("test".into()) };
+    let some = WithOptional {
+        id: 7,
+        label: Some("test".into()),
+    };
     let none = WithOptional { id: 7, label: None };
     for val in [some, none] {
         let mut buf = Vec::new();
@@ -265,7 +279,10 @@ fn roundtrip_option() {
 
 #[test]
 fn roundtrip_fixed_array() {
-    let val = WithArray { data: [0xAA, 0xBB, 0xCC, 0xDD], values: [1, 2, 3] };
+    let val = WithArray {
+        data: [0xAA, 0xBB, 0xCC, 0xDD],
+        values: [1, 2, 3],
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(buf.len(), 10);
@@ -275,7 +292,10 @@ fn roundtrip_fixed_array() {
 
 #[test]
 fn mixed_endian_encoding() {
-    let val = MixedEndian { big: 0x01020304, little: 0x01020304 };
+    let val = MixedEndian {
+        big: 0x01020304,
+        little: 0x01020304,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(&buf[0..4], &[0x01, 0x02, 0x03, 0x04]);
@@ -286,7 +306,9 @@ fn mixed_endian_encoding() {
 
 #[test]
 fn custom_len_u8() {
-    let val = ShortVec { items: vec![1, 2, 3] };
+    let val = ShortVec {
+        items: vec![1, 2, 3],
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(buf.len(), 7); // 1 + 3*2
@@ -297,7 +319,9 @@ fn custom_len_u8() {
 
 #[test]
 fn custom_len_u16_string() {
-    let val = ShortString { name: "hello".into() };
+    let val = ShortString {
+        name: "hello".into(),
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(buf.len(), 7); // 2 + 5
@@ -307,7 +331,9 @@ fn custom_len_u16_string() {
 
 #[test]
 fn min_len_accepts_valid() {
-    let val = NonEmpty { items: vec![1, 2, 3] };
+    let val = NonEmpty {
+        items: vec![1, 2, 3],
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let (decoded, _) = NonEmpty::decode(&buf).unwrap();
@@ -320,15 +346,20 @@ fn min_len_rejects_empty() {
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let err = NonEmpty::decode(&buf).unwrap_err();
-    assert_eq!(err, CodecError::FieldError {
-        field: "items",
-        source: Box::new(CodecError::TooShort { min: 1, actual: 0 }),
-    });
+    assert_eq!(
+        err,
+        CodecError::FieldError {
+            field: "items",
+            source: Box::new(CodecError::TooShort { min: 1, actual: 0 }),
+        }
+    );
 }
 
 #[test]
 fn max_len_accepts_valid() {
-    let val = Bounded { items: vec![1, 2, 3] };
+    let val = Bounded {
+        items: vec![1, 2, 3],
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let (decoded, _) = Bounded::decode(&buf).unwrap();
@@ -337,19 +368,28 @@ fn max_len_accepts_valid() {
 
 #[test]
 fn max_len_rejects_too_long() {
-    let val = Bounded { items: vec![1, 2, 3, 4] };
+    let val = Bounded {
+        items: vec![1, 2, 3, 4],
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let err = Bounded::decode(&buf).unwrap_err();
-    assert_eq!(err, CodecError::FieldError {
-        field: "items",
-        source: Box::new(CodecError::TooLong { max: 3, actual: 4 }),
-    });
+    assert_eq!(
+        err,
+        CodecError::FieldError {
+            field: "items",
+            source: Box::new(CodecError::TooLong { max: 3, actual: 4 }),
+        }
+    );
 }
 
 #[test]
 fn skip_field() {
-    let val = WithSkip { id: 42, cached: 999, name: "hi".into() };
+    let val = WithSkip {
+        id: 42,
+        cached: 999,
+        name: "hi".into(),
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     // Should not contain the cached field (4 bytes for id + 4+2 for string = 10)
@@ -362,7 +402,11 @@ fn skip_field() {
 
 #[test]
 fn padding_field() {
-    let val = WithPadding { id: 1, flags: 2, data: 3 };
+    let val = WithPadding {
+        id: 1,
+        flags: 2,
+        data: 3,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     // 1 (id) + 1 (flags) + 3 (padding) + 4 (data) = 9
@@ -374,7 +418,10 @@ fn padding_field() {
 
 #[test]
 fn magic_field() {
-    let val = WithMagic { _magic: 0, version: 1 };
+    let val = WithMagic {
+        _magic: 0,
+        version: 1,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     // 4 (magic) + 2 (version) = 6
@@ -388,10 +435,13 @@ fn magic_field() {
 fn magic_field_rejects_wrong_value() {
     let buf = vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
     let err = WithMagic::decode(&buf).unwrap_err();
-    assert_eq!(err, CodecError::FieldError {
-        field: "_magic",
-        source: Box::new(CodecError::BadMagic),
-    });
+    assert_eq!(
+        err,
+        CodecError::FieldError {
+            field: "_magic",
+            source: Box::new(CodecError::BadMagic),
+        }
+    );
 }
 
 #[test]
@@ -409,15 +459,21 @@ fn validate_rejects_invalid() {
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let err = Validated::decode(&buf).unwrap_err();
-    assert_eq!(err, CodecError::FieldError {
-        field: "value",
-        source: Box::new(CodecError::ValidationFailed),
-    });
+    assert_eq!(
+        err,
+        CodecError::FieldError {
+            field: "value",
+            source: Box::new(CodecError::ValidationFailed),
+        }
+    );
 }
 
 #[test]
 fn container_endian() {
-    let val = AllLittle { a: 0x0102, b: 0x01020304 };
+    let val = AllLittle {
+        a: 0x0102,
+        b: 0x01020304,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(&buf[0..2], &[0x02, 0x01]); // little-endian u16
@@ -472,7 +528,9 @@ fn roundtrip_floats() {
 
 #[test]
 fn roundtrip_box() {
-    let val = Boxed { inner: Box::new(42) };
+    let val = Boxed {
+        inner: Box::new(42),
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let (decoded, _) = Boxed::decode(&buf).unwrap();
@@ -503,15 +561,24 @@ fn roundtrip_hashmap() {
 #[test]
 fn error_not_enough_bytes() {
     let err = Header::decode(&[0x00]).unwrap_err();
-    assert_eq!(err, CodecError::FieldError {
-        field: "version",
-        source: Box::new(CodecError::NotEnoughBytes { needed: 2, available: 1 }),
-    });
+    assert_eq!(
+        err,
+        CodecError::FieldError {
+            field: "version",
+            source: Box::new(CodecError::NotEnoughBytes {
+                needed: 2,
+                available: 1
+            }),
+        }
+    );
 }
 
 #[test]
 fn error_unknown_discriminant() {
-    assert_eq!(Message::decode(&[255]), Err(CodecError::UnknownDiscriminant { value: 255 }));
+    assert_eq!(
+        Message::decode(&[255]),
+        Err(CodecError::UnknownDiscriminant { value: 255 })
+    );
 }
 
 #[test]
@@ -522,7 +589,11 @@ fn error_invalid_utf8() {
 
 #[test]
 fn remaining_bytes_preserved() {
-    let h = Header { version: 1, length: 0, flags: 0 };
+    let h = Header {
+        version: 1,
+        length: 0,
+        flags: 0,
+    };
     let mut buf = Vec::new();
     h.encode(&mut buf);
     buf.extend_from_slice(&[0xAA, 0xBB]);
@@ -540,7 +611,10 @@ struct BigInt {
 
 #[test]
 fn roundtrip_u128() {
-    let val = BigInt { val: u128::MAX, signed: -1 };
+    let val = BigInt {
+        val: u128::MAX,
+        signed: -1,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(buf.len(), 32);
@@ -552,7 +626,11 @@ fn roundtrip_u128() {
 
 #[test]
 fn decode_exact_success() {
-    let h = Header { version: 1, length: 2, flags: 3 };
+    let h = Header {
+        version: 1,
+        length: 2,
+        flags: 3,
+    };
     let mut buf = Vec::new();
     h.encode(&mut buf);
     let decoded = Header::decode_exact(&buf).unwrap();
@@ -561,7 +639,11 @@ fn decode_exact_success() {
 
 #[test]
 fn decode_exact_trailing_bytes() {
-    let h = Header { version: 1, length: 2, flags: 3 };
+    let h = Header {
+        version: 1,
+        length: 2,
+        flags: 3,
+    };
     let mut buf = Vec::new();
     h.encode(&mut buf);
     buf.push(0xFF);
@@ -573,7 +655,11 @@ fn decode_exact_trailing_bytes() {
 
 #[test]
 fn encoded_size_works() {
-    let h = Header { version: 1, length: 2, flags: 3 };
+    let h = Header {
+        version: 1,
+        length: 2,
+        flags: 3,
+    };
     assert_eq!(h.encoded_size(), 7);
 }
 
@@ -596,7 +682,10 @@ mod custom_codec {
     pub fn decode(input: &[u8]) -> Result<(u16, &[u8]), CodecError> {
         // decode as little-endian u16
         if input.len() < 2 {
-            return Err(CodecError::NotEnoughBytes { needed: 2, available: input.len() });
+            return Err(CodecError::NotEnoughBytes {
+                needed: 2,
+                available: input.len(),
+            });
         }
         let val = u16::from_le_bytes([input[0], input[1]]);
         Ok((val, &input[2..]))
@@ -671,7 +760,12 @@ struct TcpFlags {
 
 #[test]
 fn bitfield_roundtrip() {
-    let val = Flags { syn: 1, ack: 0, fin: 1, reserved: 0b10101 };
+    let val = Flags {
+        syn: 1,
+        ack: 0,
+        fin: 1,
+        reserved: 0b10101,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(buf.len(), 1);
@@ -684,7 +778,11 @@ fn bitfield_roundtrip() {
 
 #[test]
 fn bitfield_two_bytes() {
-    let val = TcpFlags { version: 4, ihl: 5, dscp: 0xFF };
+    let val = TcpFlags {
+        version: 4,
+        ihl: 5,
+        dscp: 0xFF,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(buf.len(), 2);
@@ -816,7 +914,10 @@ fn error_context_tuple_struct() {
 
 #[test]
 fn encoded_size_enum() {
-    let msg = Message::Data { id: 1, payload: vec![0; 10] };
+    let msg = Message::Data {
+        id: 1,
+        payload: vec![0; 10],
+    };
     // disc(1) + id(4) + vec_len(4) + 10 bytes = 19
     assert_eq!(msg.encoded_size(), 19);
     assert_eq!(Message::Ping.encoded_size(), 1);
@@ -836,7 +937,11 @@ struct BitfieldMixed {
 
 #[test]
 fn bitfield_followed_by_normal() {
-    let val = BitfieldMixed { a: 0b101, b: 0b11010, normal: 0x1234 };
+    let val = BitfieldMixed {
+        a: 0b101,
+        b: 0b11010,
+        normal: 0x1234,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     // a=101, b=11010 -> 10111010 = 0xBA, then u16 0x1234
@@ -858,7 +963,10 @@ struct BitfieldWide {
 
 #[test]
 fn bitfield_wide_values() {
-    let val = BitfieldWide { val12: 0xABC, val4: 0xD };
+    let val = BitfieldWide {
+        val12: 0xABC,
+        val4: 0xD,
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     assert_eq!(buf.len(), 2);
@@ -908,7 +1016,9 @@ struct WithBoxedSliceMinLen {
 
 #[test]
 fn boxed_slice_roundtrip() {
-    let val = WithBoxedSlice { data: vec![1, 2, 3].into_boxed_slice() };
+    let val = WithBoxedSlice {
+        data: vec![1, 2, 3].into_boxed_slice(),
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     // u32 len (4) + 3 bytes = 7
@@ -920,7 +1030,9 @@ fn boxed_slice_roundtrip() {
 
 #[test]
 fn boxed_slice_custom_len() {
-    let val = WithBoxedSliceShortLen { data: vec![1, 2].into_boxed_slice() };
+    let val = WithBoxedSliceShortLen {
+        data: vec![1, 2].into_boxed_slice(),
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     // u8 len (1) + 2 * u16 (4) = 5
@@ -932,7 +1044,9 @@ fn boxed_slice_custom_len() {
 
 #[test]
 fn boxed_slice_min_len_rejects() {
-    let val = WithBoxedSliceMinLen { data: vec![1].into_boxed_slice() };
+    let val = WithBoxedSliceMinLen {
+        data: vec![1].into_boxed_slice(),
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let err = WithBoxedSliceMinLen::decode(&buf).unwrap_err();
@@ -968,7 +1082,10 @@ struct WithMultiTrailing {
 
 #[test]
 fn trailing_roundtrip_with_data() {
-    let val = WithTrailing { id: 42, label: "hello".to_string() };
+    let val = WithTrailing {
+        id: 42,
+        label: "hello".to_string(),
+    };
     let mut buf = Vec::new();
     val.encode(&mut buf);
     let (decoded, rest) = WithTrailing::decode(&buf).unwrap();

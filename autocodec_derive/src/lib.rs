@@ -36,8 +36,22 @@ pub fn derive_codec(input: TokenStream) -> TokenStream {
     let container_attrs = parse_container_attrs(&input);
 
     let expanded = match &input.data {
-        Data::Struct(data) => impl_struct(name, &impl_generics, &ty_generics, where_clause, &data.fields, &container_attrs),
-        Data::Enum(data) => impl_enum(name, &impl_generics, &ty_generics, where_clause, data, &container_attrs),
+        Data::Struct(data) => impl_struct(
+            name,
+            &impl_generics,
+            &ty_generics,
+            where_clause,
+            &data.fields,
+            &container_attrs,
+        ),
+        Data::Enum(data) => impl_enum(
+            name,
+            &impl_generics,
+            &ty_generics,
+            where_clause,
+            data,
+            &container_attrs,
+        ),
         Data::Union(_) => {
             return syn::Error::new_spanned(&input.ident, "Codec cannot be derived for unions")
                 .to_compile_error()
@@ -51,13 +65,25 @@ pub fn derive_codec(input: TokenStream) -> TokenStream {
 // --- Attribute types ---
 
 #[derive(Clone, Copy, PartialEq)]
-enum Endian { Big, Little }
+enum Endian {
+    Big,
+    Little,
+}
 
 #[derive(Clone, Copy)]
-enum LenType { U8, U16, U32, U64 }
+enum LenType {
+    U8,
+    U16,
+    U32,
+    U64,
+}
 
 #[derive(Clone, Copy)]
-enum DiscType { U8, U16, U32 }
+enum DiscType {
+    U8,
+    U16,
+    U32,
+}
 
 struct ContainerAttrs {
     endian: Option<Endian>,
@@ -87,14 +113,22 @@ fn parse_container_attrs(input: &DeriveInput) -> ContainerAttrs {
         if attr.path().is_ident("repr")
             && let Ok(p) = attr.parse_args::<syn::Path>()
         {
-            if p.is_ident("u8") { disc_type = DiscType::U8; }
-            else if p.is_ident("u16") { disc_type = DiscType::U16; }
-            else if p.is_ident("u32") { disc_type = DiscType::U32; }
+            if p.is_ident("u8") {
+                disc_type = DiscType::U8;
+            } else if p.is_ident("u16") {
+                disc_type = DiscType::U16;
+            } else if p.is_ident("u32") {
+                disc_type = DiscType::U32;
+            }
         }
-        if !attr.path().is_ident("codec") { continue; }
+        if !attr.path().is_ident("codec") {
+            continue;
+        }
         if let Ok(Meta::NameValue(nv)) = attr.parse_args::<Meta>() {
             if nv.path.is_ident("endian")
-                && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                && let Expr::Lit(ExprLit {
+                    lit: Lit::Str(s), ..
+                }) = &nv.value
             {
                 endian = match s.value().as_str() {
                     "little" => Some(Endian::Little),
@@ -103,7 +137,9 @@ fn parse_container_attrs(input: &DeriveInput) -> ContainerAttrs {
                 };
             }
             if nv.path.is_ident("discriminant_type")
-                && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                && let Expr::Lit(ExprLit {
+                    lit: Lit::Str(s), ..
+                }) = &nv.value
             {
                 disc_type = match s.value().as_str() {
                     "u8" => DiscType::U8,
@@ -119,16 +155,28 @@ fn parse_container_attrs(input: &DeriveInput) -> ContainerAttrs {
 
 fn parse_field_attrs(field: &Field) -> FieldAttrs {
     let mut attrs = FieldAttrs {
-        endian: None, len: None, min_len: None, max_len: None,
-        skip: false, trailing: false, padding: None, magic: None, validate: None,
-        with_module: None, default_expr: None, bits: None,
+        endian: None,
+        len: None,
+        min_len: None,
+        max_len: None,
+        skip: false,
+        trailing: false,
+        padding: None,
+        magic: None,
+        validate: None,
+        with_module: None,
+        default_expr: None,
+        bits: None,
     };
     for attr in &field.attrs {
-        if !attr.path().is_ident("codec") { continue; }
-        let nested = attr.parse_args_with(
-            syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated
-        );
-        let Ok(nested) = nested else { continue; };
+        if !attr.path().is_ident("codec") {
+            continue;
+        }
+        let nested = attr
+            .parse_args_with(syn::punctuated::Punctuated::<Meta, syn::Token![,]>::parse_terminated);
+        let Ok(nested) = nested else {
+            continue;
+        };
         for meta in nested {
             match meta {
                 Meta::Path(p) if p.is_ident("skip") => {
@@ -139,7 +187,9 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
                 }
                 Meta::NameValue(nv) => {
                     if nv.path.is_ident("endian")
-                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) = &nv.value
                     {
                         attrs.endian = match s.value().as_str() {
                             "little" => Some(Endian::Little),
@@ -148,7 +198,9 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
                         };
                     }
                     if nv.path.is_ident("len")
-                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) = &nv.value
                     {
                         attrs.len = match s.value().as_str() {
                             "u8" => Some(LenType::U8),
@@ -159,42 +211,58 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
                         };
                     }
                     if nv.path.is_ident("min_len")
-                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Int(i), ..
+                        }) = &nv.value
                     {
                         attrs.min_len = i.base10_parse().ok();
                     }
                     if nv.path.is_ident("max_len")
-                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Int(i), ..
+                        }) = &nv.value
                     {
                         attrs.max_len = i.base10_parse().ok();
                     }
                     if nv.path.is_ident("padding")
-                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Int(i), ..
+                        }) = &nv.value
                     {
                         attrs.padding = i.base10_parse().ok();
                     }
                     if nv.path.is_ident("magic")
-                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Int(i), ..
+                        }) = &nv.value
                     {
                         attrs.magic = i.base10_parse().ok();
                     }
                     if nv.path.is_ident("validate")
-                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) = &nv.value
                     {
                         attrs.validate = Some(s.value());
                     }
                     if nv.path.is_ident("with")
-                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) = &nv.value
                     {
                         attrs.with_module = Some(s.value());
                     }
                     if nv.path.is_ident("default")
-                        && let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) = &nv.value
                     {
                         attrs.default_expr = Some(s.value());
                     }
                     if nv.path.is_ident("bits")
-                        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+                        && let Expr::Lit(ExprLit {
+                            lit: Lit::Int(i), ..
+                        }) = &nv.value
                     {
                         attrs.bits = i.base10_parse().ok();
                     }
@@ -209,16 +277,22 @@ fn parse_field_attrs(field: &Field) -> FieldAttrs {
 fn parse_variant_discriminant(v: &syn::Variant) -> Option<u64> {
     // Check Rust's native discriminant: `Variant = N`
     if let Some((_, expr)) = &v.discriminant
-        && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = expr
+        && let Expr::Lit(ExprLit {
+            lit: Lit::Int(i), ..
+        }) = expr
     {
         return i.base10_parse().ok();
     }
     // Check #[codec(discriminant = N)]
     for attr in &v.attrs {
-        if !attr.path().is_ident("codec") { continue; }
+        if !attr.path().is_ident("codec") {
+            continue;
+        }
         if let Ok(Meta::NameValue(nv)) = attr.parse_args::<Meta>()
             && nv.path.is_ident("discriminant")
-            && let Expr::Lit(ExprLit { lit: Lit::Int(i), .. }) = &nv.value
+            && let Expr::Lit(ExprLit {
+                lit: Lit::Int(i), ..
+            }) = &nv.value
         {
             return i.base10_parse().ok();
         }
@@ -241,7 +315,11 @@ fn effective_endian(field: &FieldAttrs, container: &ContainerAttrs) -> Option<En
     field.endian.or(container.endian)
 }
 
-fn decode_expr(ty: &syn::Type, attrs: &FieldAttrs, container: &ContainerAttrs) -> proc_macro2::TokenStream {
+fn decode_expr(
+    ty: &syn::Type,
+    attrs: &FieldAttrs,
+    container: &ContainerAttrs,
+) -> proc_macro2::TokenStream {
     if let Some(lt) = attrs.len {
         let len_ty = len_type_tokens(lt);
         return quote! { autocodec::decode_with_len::<#len_ty, #ty>(input)? };
@@ -253,7 +331,11 @@ fn decode_expr(ty: &syn::Type, attrs: &FieldAttrs, container: &ContainerAttrs) -
     }
 }
 
-fn encode_expr(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs, container: &ContainerAttrs) -> proc_macro2::TokenStream {
+fn encode_expr(
+    field_expr: proc_macro2::TokenStream,
+    attrs: &FieldAttrs,
+    container: &ContainerAttrs,
+) -> proc_macro2::TokenStream {
     if let Some(lt) = attrs.len {
         let len_ty = len_type_tokens(lt);
         return quote! { autocodec::encode_with_len::<#len_ty, _>(&#field_expr, buf); };
@@ -265,7 +347,11 @@ fn encode_expr(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs, contain
     }
 }
 
-fn encode_expr_ref(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs, container: &ContainerAttrs) -> proc_macro2::TokenStream {
+fn encode_expr_ref(
+    field_expr: proc_macro2::TokenStream,
+    attrs: &FieldAttrs,
+    container: &ContainerAttrs,
+) -> proc_macro2::TokenStream {
     if let Some(lt) = attrs.len {
         let len_ty = len_type_tokens(lt);
         return quote! { autocodec::encode_with_len::<#len_ty, _>(#field_expr, buf); };
@@ -277,7 +363,12 @@ fn encode_expr_ref(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs, con
     }
 }
 
-fn decode_stmt(binding: proc_macro2::TokenStream, ty: &syn::Type, attrs: &FieldAttrs, container: &ContainerAttrs) -> proc_macro2::TokenStream {
+fn decode_stmt(
+    binding: proc_macro2::TokenStream,
+    ty: &syn::Type,
+    attrs: &FieldAttrs,
+    container: &ContainerAttrs,
+) -> proc_macro2::TokenStream {
     // Magic field: decode and validate constant, bind default
     if let Some(magic) = attrs.magic {
         let magic_lit = syn::LitInt::new(&format!("{magic}"), proc_macro2::Span::call_site());
@@ -354,7 +445,12 @@ fn decode_stmt(binding: proc_macro2::TokenStream, ty: &syn::Type, attrs: &FieldA
     stmts
 }
 
-fn encode_field_stmt(field_expr: proc_macro2::TokenStream, attrs: &FieldAttrs, container: &ContainerAttrs, is_ref: bool) -> proc_macro2::TokenStream {
+fn encode_field_stmt(
+    field_expr: proc_macro2::TokenStream,
+    attrs: &FieldAttrs,
+    container: &ContainerAttrs,
+    is_ref: bool,
+) -> proc_macro2::TokenStream {
     if let Some(magic) = attrs.magic {
         let magic_lit = syn::LitInt::new(&format!("{magic}u32"), proc_macro2::Span::call_site());
         let mut s = quote! { autocodec::Codec::encode(&#magic_lit, buf); };
@@ -418,7 +514,8 @@ fn gen_decode_stmts_named(
                 i += 1;
             }
             let total_bytes = total_bits.div_ceil(8);
-            let total_bytes_lit = syn::LitInt::new(&format!("{total_bytes}"), proc_macro2::Span::call_site());
+            let total_bytes_lit =
+                syn::LitInt::new(&format!("{total_bytes}"), proc_macro2::Span::call_site());
 
             stmts.extend(quote! {
                 autocodec::check_len(input, #total_bytes_lit)?;
@@ -431,7 +528,8 @@ fn gen_decode_stmts_named(
                 let n = field_names[j];
                 let t = field_types[j];
                 let b = attrs[j].bits.unwrap();
-                let offset_lit = syn::LitInt::new(&format!("{bit_offset}"), proc_macro2::Span::call_site());
+                let offset_lit =
+                    syn::LitInt::new(&format!("{bit_offset}"), proc_macro2::Span::call_site());
                 let bits_lit = syn::LitInt::new(&format!("{b}"), proc_macro2::Span::call_site());
                 stmts.extend(quote! {
                     let #n = autocodec::extract_bits(__bitfield_bytes, #offset_lit, #bits_lit) as #t;
@@ -478,7 +576,8 @@ fn gen_encode_stmts_named(
                 i += 1;
             }
             let total_bytes = total_bits.div_ceil(8);
-            let total_bytes_lit = syn::LitInt::new(&format!("{total_bytes}"), proc_macro2::Span::call_site());
+            let total_bytes_lit =
+                syn::LitInt::new(&format!("{total_bytes}"), proc_macro2::Span::call_site());
 
             stmts.extend(quote! {
                 let mut __bitfield_buf = [0u8; #total_bytes_lit];
@@ -488,7 +587,8 @@ fn gen_encode_stmts_named(
             for j in group_start..i {
                 let n = field_names[j];
                 let b = attrs[j].bits.unwrap();
-                let offset_lit = syn::LitInt::new(&format!("{bit_offset}"), proc_macro2::Span::call_site());
+                let offset_lit =
+                    syn::LitInt::new(&format!("{bit_offset}"), proc_macro2::Span::call_site());
                 let bits_lit = syn::LitInt::new(&format!("{b}"), proc_macro2::Span::call_site());
                 stmts.extend(quote! {
                     autocodec::set_bits(&mut __bitfield_buf, #offset_lit, #bits_lit, self.#n as u64);
@@ -565,7 +665,8 @@ fn impl_struct(
             let field_types: Vec<_> = f.named.iter().map(|f| &f.ty).collect();
             let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
 
-            let decode_stmts = gen_decode_stmts_named(&field_names, &field_types, &attrs, container);
+            let decode_stmts =
+                gen_decode_stmts_named(&field_names, &field_types, &attrs, container);
             let encode_stmts = gen_encode_stmts_named(&field_names, &attrs, container);
             let size_stmts = gen_size_stmts_named(&field_names, &attrs);
             let construct = quote! { Self { #(#field_names),* } };
@@ -604,15 +705,28 @@ fn impl_struct(
                     let (#id, input) = __decode_result.map_err(|e| autocodec::field_err(#name_str, e))?;
                 }
             }).collect();
-            let encode_stmts: Vec<_> = field_idents.iter().enumerate().zip(attrs.iter()).map(|((i, _), a)| {
-                let idx = syn::Index::from(i);
-                encode_field_stmt(quote! { self.#idx }, a, container, false)
-            }).collect();
-            let size_stmts: Vec<_> = field_idents.iter().enumerate().zip(attrs.iter()).map(|((i, _), a)| {
-                let idx = syn::Index::from(i);
-                if a.skip { quote! { 0usize } }
-                else { quote! { autocodec::Codec::encoded_size(&self.#idx) } }
-            }).collect();
+            let encode_stmts: Vec<_> = field_idents
+                .iter()
+                .enumerate()
+                .zip(attrs.iter())
+                .map(|((i, _), a)| {
+                    let idx = syn::Index::from(i);
+                    encode_field_stmt(quote! { self.#idx }, a, container, false)
+                })
+                .collect();
+            let size_stmts: Vec<_> = field_idents
+                .iter()
+                .enumerate()
+                .zip(attrs.iter())
+                .map(|((i, _), a)| {
+                    let idx = syn::Index::from(i);
+                    if a.skip {
+                        quote! { 0usize }
+                    } else {
+                        quote! { autocodec::Codec::encoded_size(&self.#idx) }
+                    }
+                })
+                .collect();
 
             quote! {
                 impl #impl_generics autocodec::Codec for #name #ty_generics #where_clause {
@@ -690,9 +804,14 @@ fn impl_enum(
     for (i, &d) in disc_values.iter().enumerate() {
         if d > max_disc {
             let v = &data.variants.iter().nth(i).unwrap().ident;
-            return syn::Error::new_spanned(v,
-                format!("Codec: discriminant {d} exceeds maximum for {}", quote!(#disc_ty)))
-                .to_compile_error();
+            return syn::Error::new_spanned(
+                v,
+                format!(
+                    "Codec: discriminant {d} exceeds maximum for {}",
+                    quote!(#disc_ty)
+                ),
+            )
+            .to_compile_error();
         }
     }
 
@@ -751,43 +870,51 @@ fn impl_enum(
         }
     }).collect();
 
-    let encode_arms: Vec<_> = data.variants.iter().zip(disc_values.iter()).map(|(v, &disc)| {
-        let vname = &v.ident;
-        let disc_lit = syn::LitInt::new(&format!("{disc}"), proc_macro2::Span::call_site());
-        match &v.fields {
-            Fields::Unit => quote! {
-                Self::#vname => { autocodec::Codec::encode(&(#disc_lit as #disc_ty), buf); }
-            },
-            Fields::Named(f) => {
-                let field_names: Vec<_> = f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
-                let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
-                let stmts = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
-                    encode_field_stmt(quote! { #n }, a, container, true)
-                });
-                quote! {
-                    Self::#vname { #(#field_names),* } => {
-                        autocodec::Codec::encode(&(#disc_lit as #disc_ty), buf);
-                        #(#stmts)*
+    let encode_arms: Vec<_> = data
+        .variants
+        .iter()
+        .zip(disc_values.iter())
+        .map(|(v, &disc)| {
+            let vname = &v.ident;
+            let disc_lit = syn::LitInt::new(&format!("{disc}"), proc_macro2::Span::call_site());
+            match &v.fields {
+                Fields::Unit => quote! {
+                    Self::#vname => { autocodec::Codec::encode(&(#disc_lit as #disc_ty), buf); }
+                },
+                Fields::Named(f) => {
+                    let field_names: Vec<_> =
+                        f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
+                    let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
+                    let stmts = field_names
+                        .iter()
+                        .zip(attrs.iter())
+                        .map(|(n, a)| encode_field_stmt(quote! { #n }, a, container, true));
+                    quote! {
+                        Self::#vname { #(#field_names),* } => {
+                            autocodec::Codec::encode(&(#disc_lit as #disc_ty), buf);
+                            #(#stmts)*
+                        }
+                    }
+                }
+                Fields::Unnamed(f) => {
+                    let attrs: Vec<_> = f.unnamed.iter().map(parse_field_attrs).collect();
+                    let field_idents: Vec<_> = (0..f.unnamed.len())
+                        .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
+                        .collect();
+                    let stmts = field_idents
+                        .iter()
+                        .zip(attrs.iter())
+                        .map(|(id, a)| encode_field_stmt(quote! { #id }, a, container, true));
+                    quote! {
+                        Self::#vname(#(#field_idents),*) => {
+                            autocodec::Codec::encode(&(#disc_lit as #disc_ty), buf);
+                            #(#stmts)*
+                        }
                     }
                 }
             }
-            Fields::Unnamed(f) => {
-                let attrs: Vec<_> = f.unnamed.iter().map(parse_field_attrs).collect();
-                let field_idents: Vec<_> = (0..f.unnamed.len())
-                    .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
-                    .collect();
-                let stmts = field_idents.iter().zip(attrs.iter()).map(|(id, a)| {
-                    encode_field_stmt(quote! { #id }, a, container, true)
-                });
-                quote! {
-                    Self::#vname(#(#field_idents),*) => {
-                        autocodec::Codec::encode(&(#disc_lit as #disc_ty), buf);
-                        #(#stmts)*
-                    }
-                }
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     let disc_size = match dt {
         DiscType::U8 => 1usize,
@@ -796,38 +923,49 @@ fn impl_enum(
     };
     let disc_size_lit = syn::LitInt::new(&format!("{disc_size}"), proc_macro2::Span::call_site());
 
-    let size_arms: Vec<_> = data.variants.iter().map(|v| {
-        let vname = &v.ident;
-        match &v.fields {
-            Fields::Unit => quote! {
-                Self::#vname => #disc_size_lit,
-            },
-            Fields::Named(f) => {
-                let field_names: Vec<_> = f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
-                let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
-                let sizes = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
-                    if a.skip { quote! { 0usize } }
-                    else { quote! { autocodec::Codec::encoded_size(#n) } }
-                });
-                quote! {
-                    Self::#vname { #(#field_names),* } => #disc_size_lit #(+ #sizes)*,
+    let size_arms: Vec<_> = data
+        .variants
+        .iter()
+        .map(|v| {
+            let vname = &v.ident;
+            match &v.fields {
+                Fields::Unit => quote! {
+                    Self::#vname => #disc_size_lit,
+                },
+                Fields::Named(f) => {
+                    let field_names: Vec<_> =
+                        f.named.iter().map(|f| f.ident.as_ref().unwrap()).collect();
+                    let attrs: Vec<_> = f.named.iter().map(parse_field_attrs).collect();
+                    let sizes = field_names.iter().zip(attrs.iter()).map(|(n, a)| {
+                        if a.skip {
+                            quote! { 0usize }
+                        } else {
+                            quote! { autocodec::Codec::encoded_size(#n) }
+                        }
+                    });
+                    quote! {
+                        Self::#vname { #(#field_names),* } => #disc_size_lit #(+ #sizes)*,
+                    }
+                }
+                Fields::Unnamed(f) => {
+                    let attrs: Vec<_> = f.unnamed.iter().map(parse_field_attrs).collect();
+                    let field_idents: Vec<_> = (0..f.unnamed.len())
+                        .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
+                        .collect();
+                    let sizes = field_idents.iter().zip(attrs.iter()).map(|(id, a)| {
+                        if a.skip {
+                            quote! { 0usize }
+                        } else {
+                            quote! { autocodec::Codec::encoded_size(#id) }
+                        }
+                    });
+                    quote! {
+                        Self::#vname(#(#field_idents),*) => #disc_size_lit #(+ #sizes)*,
+                    }
                 }
             }
-            Fields::Unnamed(f) => {
-                let attrs: Vec<_> = f.unnamed.iter().map(parse_field_attrs).collect();
-                let field_idents: Vec<_> = (0..f.unnamed.len())
-                    .map(|i| syn::Ident::new(&format!("f{i}"), proc_macro2::Span::call_site()))
-                    .collect();
-                let sizes = field_idents.iter().zip(attrs.iter()).map(|(id, a)| {
-                    if a.skip { quote! { 0usize } }
-                    else { quote! { autocodec::Codec::encoded_size(#id) } }
-                });
-                quote! {
-                    Self::#vname(#(#field_idents),*) => #disc_size_lit #(+ #sizes)*,
-                }
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     quote! {
         impl #impl_generics autocodec::Codec for #name #ty_generics #where_clause {

@@ -10,7 +10,7 @@ keywords = ["binary", "protocol", "codec", "derive", "serialization"]
 categories = ["encoding", "parsing", "network-programming"]
 
 [dependencies]
-autocodec_derive = { path = "autocodec_derive" }
+autocodec_derive = { path = "autocodec_derive", version = "0.1.1" }
 
 [workspace]
 members = [".", "autocodec_derive"]

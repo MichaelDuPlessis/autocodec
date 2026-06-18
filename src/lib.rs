@@ -340,7 +340,10 @@ pub enum CodecError {
     /// A length prefix would require an unreasonably large allocation.
     AllocationTooLarge { requested: usize },
     /// An error occurred while decoding a specific field.
-    FieldError { field: &'static str, source: Box<CodecError> },
+    FieldError {
+        field: &'static str,
+        source: Box<CodecError>,
+    },
 }
 
 /// Maximum number of elements allowed in a single Vec/String decode.
@@ -435,7 +438,10 @@ pub trait Codec: Sized {
 #[inline]
 pub fn check_len(input: &[u8], n: usize) -> Result<(), CodecError> {
     if input.len() < n {
-        Err(CodecError::NotEnoughBytes { needed: n, available: input.len() })
+        Err(CodecError::NotEnoughBytes {
+            needed: n,
+            available: input.len(),
+        })
     } else {
         Ok(())
     }
@@ -484,7 +490,9 @@ impl Codec for f32 {
         buf.extend_from_slice(&self.to_be_bytes());
     }
     #[inline]
-    fn encoded_size(&self) -> usize { 4 }
+    fn encoded_size(&self) -> usize {
+        4
+    }
 }
 
 impl Codec for f64 {
@@ -499,7 +507,9 @@ impl Codec for f64 {
         buf.extend_from_slice(&self.to_be_bytes());
     }
     #[inline]
-    fn encoded_size(&self) -> usize { 8 }
+    fn encoded_size(&self) -> usize {
+        8
+    }
 }
 
 // --- Endian traits ---
@@ -551,19 +561,27 @@ impl_endian!(u8, u16, u32, u64, u128, i8, i16, i32, i64, i128, f32, f64);
 
 #[doc(hidden)]
 #[inline]
-pub fn decode_be<T: CodecBe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> { T::decode_be(input) }
+pub fn decode_be<T: CodecBe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
+    T::decode_be(input)
+}
 
 #[doc(hidden)]
 #[inline]
-pub fn encode_be<T: CodecBe>(val: &T, buf: &mut Vec<u8>) { val.encode_be(buf); }
+pub fn encode_be<T: CodecBe>(val: &T, buf: &mut Vec<u8>) {
+    val.encode_be(buf);
+}
 
 #[doc(hidden)]
 #[inline]
-pub fn decode_le<T: CodecLe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> { T::decode_le(input) }
+pub fn decode_le<T: CodecLe>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
+    T::decode_le(input)
+}
 
 #[doc(hidden)]
 #[inline]
-pub fn encode_le<T: CodecLe>(val: &T, buf: &mut Vec<u8>) { val.encode_le(buf); }
+pub fn encode_le<T: CodecLe>(val: &T, buf: &mut Vec<u8>) {
+    val.encode_le(buf);
+}
 
 // --- Length prefix ---
 
@@ -574,23 +592,47 @@ pub trait LenPrefix: Codec {
 }
 
 impl LenPrefix for u8 {
-    #[inline] fn to_usize(self) -> usize { self as usize }
-    #[inline] fn from_usize(n: usize) -> Self { n as u8 }
+    #[inline]
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    #[inline]
+    fn from_usize(n: usize) -> Self {
+        n as u8
+    }
 }
 
 impl LenPrefix for u16 {
-    #[inline] fn to_usize(self) -> usize { self as usize }
-    #[inline] fn from_usize(n: usize) -> Self { n as u16 }
+    #[inline]
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    #[inline]
+    fn from_usize(n: usize) -> Self {
+        n as u16
+    }
 }
 
 impl LenPrefix for u32 {
-    #[inline] fn to_usize(self) -> usize { self as usize }
-    #[inline] fn from_usize(n: usize) -> Self { n as u32 }
+    #[inline]
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    #[inline]
+    fn from_usize(n: usize) -> Self {
+        n as u32
+    }
 }
 
 impl LenPrefix for u64 {
-    #[inline] fn to_usize(self) -> usize { self as usize }
-    #[inline] fn from_usize(n: usize) -> Self { n as u64 }
+    #[inline]
+    fn to_usize(self) -> usize {
+        self as usize
+    }
+    #[inline]
+    fn from_usize(n: usize) -> Self {
+        n as u64
+    }
 }
 
 #[doc(hidden)]
@@ -616,7 +658,9 @@ impl<T: Codec> CodecWithLen for Vec<T> {
     }
     fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
         L::from_usize(self.len()).encode(buf);
-        for item in self { item.encode(buf); }
+        for item in self {
+            item.encode(buf);
+        }
     }
 }
 
@@ -644,13 +688,17 @@ impl<T: Codec> CodecWithLen for Box<[T]> {
     }
     fn encode_with_len<L: LenPrefix>(&self, buf: &mut Vec<u8>) {
         L::from_usize(self.len()).encode(buf);
-        for item in self.iter() { item.encode(buf); }
+        for item in self.iter() {
+            item.encode(buf);
+        }
     }
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn decode_with_len<L: LenPrefix, T: CodecWithLen>(input: &[u8]) -> Result<(T, &[u8]), CodecError> {
+pub fn decode_with_len<L: LenPrefix, T: CodecWithLen>(
+    input: &[u8],
+) -> Result<(T, &[u8]), CodecError> {
     T::decode_with_len::<L>(input)
 }
 
@@ -668,43 +716,65 @@ pub trait HasLen {
 }
 
 impl<T> HasLen for Vec<T> {
-    #[inline] fn codec_len(&self) -> usize { self.len() }
+    #[inline]
+    fn codec_len(&self) -> usize {
+        self.len()
+    }
 }
 
 impl HasLen for String {
-    #[inline] fn codec_len(&self) -> usize { self.len() }
+    #[inline]
+    fn codec_len(&self) -> usize {
+        self.len()
+    }
 }
 
 impl<T> HasLen for Box<[T]> {
-    #[inline] fn codec_len(&self) -> usize { self.len() }
+    #[inline]
+    fn codec_len(&self) -> usize {
+        self.len()
+    }
 }
 
 #[doc(hidden)]
 #[inline]
 pub fn check_min_len<T: HasLen>(val: &T, min: usize) -> Result<(), CodecError> {
     let actual = val.codec_len();
-    if actual < min { Err(CodecError::TooShort { min, actual }) } else { Ok(()) }
+    if actual < min {
+        Err(CodecError::TooShort { min, actual })
+    } else {
+        Ok(())
+    }
 }
 
 #[doc(hidden)]
 #[inline]
 pub fn check_max_len<T: HasLen>(val: &T, max: usize) -> Result<(), CodecError> {
     let actual = val.codec_len();
-    if actual > max { Err(CodecError::TooLong { max, actual }) } else { Ok(()) }
+    if actual > max {
+        Err(CodecError::TooLong { max, actual })
+    } else {
+        Ok(())
+    }
 }
 
 /// Wrap an error with field context.
 #[doc(hidden)]
 #[inline]
 pub fn field_err(field: &'static str, e: CodecError) -> CodecError {
-    CodecError::FieldError { field, source: Box::new(e) }
+    CodecError::FieldError {
+        field,
+        source: Box::new(e),
+    }
 }
 
 // --- Skip helper ---
 
 #[doc(hidden)]
 #[inline]
-pub fn skip_decode<T: Default>() -> T { T::default() }
+pub fn skip_decode<T: Default>() -> T {
+    T::default()
+}
 
 // --- Padding helpers ---
 
@@ -726,28 +796,36 @@ pub fn encode_padding(buf: &mut Vec<u8>, n: usize) {
 #[doc(hidden)]
 pub fn decode_magic_u8(input: &[u8], expected: u8) -> Result<&[u8], CodecError> {
     let (val, rest) = u8::decode(input)?;
-    if val != expected { return Err(CodecError::BadMagic); }
+    if val != expected {
+        return Err(CodecError::BadMagic);
+    }
     Ok(rest)
 }
 
 #[doc(hidden)]
 pub fn decode_magic_u16(input: &[u8], expected: u16) -> Result<&[u8], CodecError> {
     let (val, rest) = u16::decode(input)?;
-    if val != expected { return Err(CodecError::BadMagic); }
+    if val != expected {
+        return Err(CodecError::BadMagic);
+    }
     Ok(rest)
 }
 
 #[doc(hidden)]
 pub fn decode_magic_u32(input: &[u8], expected: u32) -> Result<&[u8], CodecError> {
     let (val, rest) = u32::decode(input)?;
-    if val != expected { return Err(CodecError::BadMagic); }
+    if val != expected {
+        return Err(CodecError::BadMagic);
+    }
     Ok(rest)
 }
 
 #[doc(hidden)]
 pub fn decode_magic_u64(input: &[u8], expected: u64) -> Result<&[u8], CodecError> {
     let (val, rest) = u64::decode(input)?;
-    if val != expected { return Err(CodecError::BadMagic); }
+    if val != expected {
+        return Err(CodecError::BadMagic);
+    }
     Ok(rest)
 }
 
@@ -813,7 +891,9 @@ impl Codec for bool {
         buf.push(if *self { 1 } else { 0 });
     }
     #[inline]
-    fn encoded_size(&self) -> usize { 1 }
+    fn encoded_size(&self) -> usize {
+        1
+    }
 }
 
 impl<T: Codec> Codec for Vec<T> {
@@ -833,7 +913,9 @@ impl<T: Codec> Codec for Vec<T> {
     }
     fn encode(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode(buf);
-        for item in self { item.encode(buf); }
+        for item in self {
+            item.encode(buf);
+        }
     }
     fn encoded_size(&self) -> usize {
         4 + self.iter().map(|i| i.encoded_size()).sum::<usize>()
@@ -855,7 +937,9 @@ impl Codec for String {
         (self.len() as u32).encode(buf);
         buf.extend_from_slice(self.as_bytes());
     }
-    fn encoded_size(&self) -> usize { 4 + self.len() }
+    fn encoded_size(&self) -> usize {
+        4 + self.len()
+    }
 }
 
 impl<T: Codec> Codec for Option<T> {
@@ -863,17 +947,26 @@ impl<T: Codec> Codec for Option<T> {
         let (tag, rest) = u8::decode(input)?;
         match tag {
             0 => Ok((None, rest)),
-            _ => { let (val, rest) = T::decode(rest)?; Ok((Some(val), rest)) }
+            _ => {
+                let (val, rest) = T::decode(rest)?;
+                Ok((Some(val), rest))
+            }
         }
     }
     fn encode(&self, buf: &mut Vec<u8>) {
         match self {
             None => 0u8.encode(buf),
-            Some(val) => { 1u8.encode(buf); val.encode(buf); }
+            Some(val) => {
+                1u8.encode(buf);
+                val.encode(buf);
+            }
         }
     }
     fn encoded_size(&self) -> usize {
-        1 + match self { None => 0, Some(val) => val.encoded_size() }
+        1 + match self {
+            None => 0,
+            Some(val) => val.encoded_size(),
+        }
     }
 }
 
@@ -888,7 +981,9 @@ impl<T: Codec> Codec for Box<T> {
         (**self).encode(buf);
     }
     #[inline]
-    fn encoded_size(&self) -> usize { (**self).encoded_size() }
+    fn encoded_size(&self) -> usize {
+        (**self).encoded_size()
+    }
 }
 
 impl<T: Codec> Codec for Box<[T]> {
@@ -898,7 +993,9 @@ impl<T: Codec> Codec for Box<[T]> {
     }
     fn encode(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode(buf);
-        for item in self.iter() { item.encode(buf); }
+        for item in self.iter() {
+            item.encode(buf);
+        }
     }
     fn encoded_size(&self) -> usize {
         4 + self.iter().map(|i| i.encoded_size()).sum::<usize>()
@@ -919,10 +1016,16 @@ impl<K: Codec + Eq + Hash, V: Codec> Codec for HashMap<K, V> {
     }
     fn encode(&self, buf: &mut Vec<u8>) {
         (self.len() as u32).encode(buf);
-        for (k, v) in self { k.encode(buf); v.encode(buf); }
+        for (k, v) in self {
+            k.encode(buf);
+            v.encode(buf);
+        }
     }
     fn encoded_size(&self) -> usize {
-        4 + self.iter().map(|(k, v)| k.encoded_size() + v.encoded_size()).sum::<usize>()
+        4 + self
+            .iter()
+            .map(|(k, v)| k.encoded_size() + v.encoded_size())
+            .sum::<usize>()
     }
 }
 
@@ -942,7 +1045,9 @@ impl<T: Codec, const N: usize> Codec for [T; N] {
         Ok((arr, rest))
     }
     fn encode(&self, buf: &mut Vec<u8>) {
-        for item in self { item.encode(buf); }
+        for item in self {
+            item.encode(buf);
+        }
     }
     fn encoded_size(&self) -> usize {
         self.iter().map(|i| i.encoded_size()).sum()
@@ -1028,14 +1133,20 @@ impl<'a> Bytes<'a> {
     }
 
     /// Encoded size in bytes.
-    pub fn encoded_size(&self) -> usize { 4 + self.0.len() }
+    pub fn encoded_size(&self) -> usize {
+        4 + self.0.len()
+    }
 }
 
 impl<'a> AsRef<[u8]> for Bytes<'a> {
-    fn as_ref(&self) -> &[u8] { self.0 }
+    fn as_ref(&self) -> &[u8] {
+        self.0
+    }
 }
 
 impl<'a> core::ops::Deref for Bytes<'a> {
     type Target = [u8];
-    fn deref(&self) -> &[u8] { self.0 }
+    fn deref(&self) -> &[u8] {
+        self.0
+    }
 }
